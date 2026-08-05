@@ -35,26 +35,62 @@ const round = (n: number, places: number): number => {
 const MAX_ENVELOPE_CHARS = 600;
 const TRUNCATION_MARKER = "...[truncated, see transcript]";
 
+const serializedLength = (e: Envelope): number => JSON.stringify(e).length;
+
 /**
  * Shrink `envelope[field]` just enough to bring the whole serialized
  * envelope back under `MAX_ENVELOPE_CHARS`, then mark the cut so a truncated
  * field never reads as a complete one — the transcript still has the rest.
  *
- * No re-measuring loop: removing N characters from a JSON string value can
- * only shrink its encoded form by at least N bytes (an escaped character
- * like `"` costs 2 bytes and saves 2 when removed), so cutting
- * `over + marker.length` characters and appending the marker is guaranteed
- * to land the whole envelope under budget in a single pass.
+ * Two things a closed-form byte estimate got wrong, both fixed by finding
+ * the cut this way instead of computing it:
+ *
+ * - `String.prototype.slice` cuts on UTF-16 code units. A cut landing
+ *   inside a surrogate pair (an emoji, say) leaves a lone surrogate, which
+ *   `JSON.stringify` re-encodes as a 6-character `\udXXX` escape — so a
+ *   "removed" character can make the encoded output *larger*, not smaller.
+ *   Working over `Array.from(text)` instead of the raw string means every
+ *   candidate prefix ends on a whole Unicode code point; a pair can never
+ *   be split.
+ * - How many bytes a cut actually saves depends on how many of the removed
+ *   characters needed JSON escaping (`"`, `\`, control characters). A fixed
+ *   "assume the worst case" formula either overshoots on ordinary text
+ *   (discarding far more than necessary) or, as above, undershoots on a
+ *   pathological one. Binary-searching the real serialized length at each
+ *   step is correct either way, because it never estimates — it measures.
+ *
+ * Bounded by construction: each step halves the search range, so this is
+ * at most ~log2(length) `JSON.stringify` calls on a small object — cheap,
+ * and it only runs at all once the envelope is already over budget.
  */
 function shrinkField(envelope: Envelope, field: "summary" | "detail"): void {
   const text = field === "summary" ? envelope.summary : envelope.detail;
-  if (!text) return;
-  const over = JSON.stringify(envelope).length - MAX_ENVELOPE_CHARS + 1;
-  if (over <= 0) return;
-  const cut = Math.min(text.length, over + TRUNCATION_MARKER.length);
-  const shrunk = text.slice(0, text.length - cut) + TRUNCATION_MARKER;
-  if (field === "summary") envelope.summary = shrunk;
-  else envelope.detail = shrunk;
+  if (!text || serializedLength(envelope) < MAX_ENVELOPE_CHARS) return;
+
+  const set = (value: string): void => {
+    if (field === "summary") envelope.summary = value;
+    else envelope.detail = value;
+  };
+
+  const points = Array.from(text);
+  set(TRUNCATION_MARKER);
+  // Even the marker alone doesn't fit — leave it; the caller-side backstop
+  // in buildEnvelope has the last word.
+  if (serializedLength(envelope) >= MAX_ENVELOPE_CHARS) return;
+
+  // Largest prefix (in code points) for which `prefix + marker` still fits.
+  // `fits` is monotonic non-increasing in the prefix length, so a standard
+  // rightmost-true binary search applies; `lo = 0` (marker alone) is
+  // already known to fit, from the check just above.
+  let lo = 0;
+  let hi = points.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    set(points.slice(0, mid).join("") + TRUNCATION_MARKER);
+    if (serializedLength(envelope) < MAX_ENVELOPE_CHARS) lo = mid;
+    else hi = mid - 1;
+  }
+  set(points.slice(0, lo).join("") + TRUNCATION_MARKER);
 }
 
 export function buildEnvelope(r: LoopResult, o: EnvelopeInputs): Envelope {
@@ -93,6 +129,19 @@ export function buildEnvelope(r: LoopResult, o: EnvelopeInputs): Envelope {
   // field a naive caller reads, once detail alone can't make room.
   shrinkField(envelope, "detail");
   shrinkField(envelope, "summary");
+
+  // Belt and braces: shrinkField's binary search is bounded and always
+  // finds the true largest fitting prefix, so this should never fire. It
+  // stays because this is the one invariant the whole component rests on,
+  // and a closed-form version of this exact guarantee was wrong once
+  // already. If even both fields at their smallest (marker-only) still
+  // don't fit — the non-text fields alone are the problem, e.g. an unusually
+  // long transcript path — there is nothing left to cut but the marker
+  // itself; that is the true floor.
+  if (serializedLength(envelope) >= MAX_ENVELOPE_CHARS) {
+    envelope.summary = TRUNCATION_MARKER;
+    delete envelope.detail;
+  }
 
   return envelope;
 }

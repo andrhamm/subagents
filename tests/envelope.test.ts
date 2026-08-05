@@ -111,6 +111,67 @@ describe("buildEnvelope", () => {
     expect(e.summary).toContain("response had no choices");
   });
 
+  // Fix round 2: round 1's shrinkField cut on raw UTF-16 code units. A cut
+  // landing inside a surrogate pair (an emoji) leaves a lone surrogate,
+  // which JSON.stringify re-encodes as a 6-char `\udXXX` escape — so the
+  // "shrink" could make the field's encoded form *larger*. This test
+  // reproduces the reviewer's rigged-boundary technique: derive the exact
+  // index round 1's formula would have cut a 5000-char summary at, then
+  // plant a surrogate pair straddling that index. Against round-1 code this
+  // produced 604 chars against the 600 bound (see report for the
+  // side-by-side run). It must never happen again, for any input.
+  it("never lands a cut inside a surrogate pair, even one planted at the old cut boundary", () => {
+    const plain = "A".repeat(5000);
+    const shapeFor = (summary: string) => ({
+      status: "ok",
+      summary,
+      turns: 3,
+      wall_secs: 1,
+      context: { peak_prompt_tokens: 21628, limit: 32768, pressure: 0.66 },
+      truncations: 2,
+      local_tokens: 500 + 20 + 8000 + 60 + 21628 + 100,
+      transcript: "/t",
+    });
+    // Round 1's formula, reproduced only to find where it used to cut —
+    // this is dead code as of this fix, kept solely to derive the rig.
+    const fullLen = JSON.stringify(shapeFor(plain)).length;
+    const marker = "...[truncated, see transcript]";
+    const over = fullLen - 600 + 1;
+    const cut = Math.min(plain.length, over + marker.length);
+    const keepIndex = plain.length - cut;
+
+    const emoji = "\u{1F600}"; // a surrogate pair: 2 UTF-16 code units, 1 code point
+    const rigged = plain.slice(0, keepIndex - 1) + emoji + plain.slice(keepIndex + 1);
+    expect(rigged.length).toBe(plain.length); // same length, pair now straddles the old boundary
+
+    const e = buildEnvelope(
+      { ...result, summary: rigged, detail: "" },
+      { wallSecs: 1, transcript: "/t", contextLimit: 32768 },
+    );
+    expect(JSON.stringify(e).length).toBeLessThan(600);
+  });
+
+  // Fix round 2, over-truncation: a closed-form cut assumed every removed
+  // character costs 1 encoded byte, so it had to overshoot to be safe
+  // against escaping — for text that's *mostly* escape-heavy (newlines,
+  // tabs, quotes, backslashes are pervasive in error messages and model
+  // output), that meant discarding far more than necessary. A multi-line
+  // summary should keep close to the full budget, not surrender most of it.
+  it("keeps close to the full budget for a multi-line summary instead of over-truncating", () => {
+    const multiline = "line one\nline two\thas a tab\nline three has a \"quote\" and a \\backslash\\\n"
+      .repeat(20);
+    const e = buildEnvelope(
+      { ...result, summary: multiline, detail: "" },
+      { wallSecs: 1, transcript: "/t", contextLimit: 32768 },
+    );
+    expect(JSON.stringify(e).length).toBeLessThan(600);
+    // The old formula's escape-heavy case kept only 271 bytes' worth out of
+    // a 600 budget; retained text here should be substantially more (the
+    // binary search converges on the true maximum fitting prefix, ~384
+    // chars for this input).
+    expect(e.summary.length).toBeGreaterThan(350);
+  });
+
   // Authorized addition (beyond the brief): most delegates emit `content: null`
   // alongside tool_calls, so on a real deadline/max_turns stop `summary` is
   // usually "" — lastText() in the loop has nothing to return. Without a
