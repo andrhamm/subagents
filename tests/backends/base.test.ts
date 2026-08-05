@@ -29,7 +29,7 @@ describe("OpenAIBackend", () => {
       { model: "m", messages: [{ role: "user", content: "yo" }] }, 5000);
     expect(seenPath).toBe("/v1/chat/completions");
     expect(seenBody.model).toBe("m");
-    expect(res.choices?.[0]?.message.content).toBe("hi");
+    expect(res.choices?.[0]?.message?.content).toBe("hi");
     expect(res.usage?.prompt_tokens).toBe(5);
   });
 

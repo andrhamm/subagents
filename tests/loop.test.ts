@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import type { Backend, ChatRequest, ChatResponse } from "../src/types";
+import type { Backend, ChatRequest, ChatResponse, Message } from "../src/types";
 import type { Tool, ToolResult } from "../src/tools/types";
 import { runLoop } from "../src/loop";
 import { resolveTools } from "../src/tools/registry";
@@ -13,6 +13,56 @@ class ScriptedBackend implements Backend {
     const next = this.script.shift();
     if (!next) throw new Error("script exhausted");
     if (next instanceof Error) throw next;
+    return next;
+  }
+}
+
+/**
+ * Enforces the wire protocol from the backend's side: every `tool_call.id`
+ * this backend issues in an assistant message must come back as a `tool`
+ * message with a matching `tool_call_id` on the very next request, or it
+ * throws. `ScriptedBackend` above only replays canned responses without
+ * checking conformance — which is exactly how a dropped or malformed
+ * `tool_call_id` could survive 82 passing tests undetected.
+ */
+class ProtocolValidatingBackend implements Backend {
+  public seen: ChatRequest[] = [];
+  private pendingIds = new Set<string>();
+  constructor(private script: ChatResponse[]) {}
+
+  async chat(req: ChatRequest): Promise<ChatResponse> {
+    this.seen.push(structuredClone(req));
+
+    const toolMsgs = req.messages.filter(
+      (m): m is Extract<Message, { role: "tool" }> => m.role === "tool");
+    // Catches the defect directly: a dropped/undefined tool_call_id is a
+    // protocol violation regardless of whether it happens to match a
+    // pending id below.
+    for (const m of toolMsgs) {
+      if (typeof m.tool_call_id !== "string" || m.tool_call_id.length === 0) {
+        throw new Error(
+          `protocol violation: a tool message has no usable tool_call_id ` +
+            `(${JSON.stringify(m.tool_call_id)})`,
+        );
+      }
+    }
+    if (this.pendingIds.size > 0) {
+      const answered = new Set(toolMsgs.map((m) => m.tool_call_id));
+      for (const id of this.pendingIds) {
+        if (!answered.has(id)) {
+          throw new Error(
+            `protocol violation: tool_call_id '${id}' was never answered by a tool message`,
+          );
+        }
+      }
+      this.pendingIds.clear();
+    }
+
+    const next = this.script.shift();
+    if (!next) throw new Error("script exhausted");
+    for (const c of next.choices?.[0]?.message?.tool_calls ?? []) {
+      if (c.id) this.pendingIds.add(c.id);
+    }
     return next;
   }
 }
@@ -56,6 +106,12 @@ const base = {
   root: process.cwd(),
 };
 
+describe("resolveTools", () => {
+  it("does not resolve inherited Object.prototype properties as tools", () => {
+    expect(() => resolveTools(["toString"])).toThrow(/unknown tool/);
+  });
+});
+
 describe("runLoop termination", () => {
   it("treats content with no tool calls as completion", async () => {
     const backend = new ScriptedBackend([assistant("here is the answer")]);
@@ -71,10 +127,6 @@ describe("runLoop termination", () => {
     const names = backend.seen[0]!.tools!.map((t) => t.function.name);
     expect(names).toEqual(["read_file"]);
     expect(r.status).toBe("ok");
-  });
-
-  it("does not resolve inherited Object.prototype properties as tools", () => {
-    expect(() => resolveTools(["toString"])).toThrow(/unknown tool/);
   });
 
   it("reports budget exhaustion from finish_reason=length", async () => {
@@ -355,5 +407,141 @@ describe("runLoop errors", () => {
     });
     const roles = r.messages.map((m) => m.role);
     expect(roles).toEqual(["system", "user", "assistant", "tool", "assistant"]);
+  });
+
+  it("marks the diagnostic slice with an ellipsis when the malformed response is cut", async () => {
+    // A response whose serialized form exceeds the 400-char diagnostic
+    // slice must say so — otherwise a cut diagnostic reads as complete.
+    const huge = {
+      choices: [], extra: "x".repeat(500),
+    } as unknown as ChatResponse;
+    const backend = new ScriptedBackend([huge]);
+    const r = await runLoop({ ...base, backend, tools: [] });
+    expect(r.status).toBe("error");
+    expect(r.detail).toContain("…");
+  });
+
+  it("does not add an ellipsis when the malformed response fits within the slice", async () => {
+    const small = { choices: [] } as unknown as ChatResponse;
+    const backend = new ScriptedBackend([small]);
+    const r = await runLoop({ ...base, backend, tools: [] });
+    expect(r.status).toBe("error");
+    expect(r.detail).not.toContain("…");
+  });
+});
+
+// Critical fix: an arbitrary HTTP server controls `tool_calls`, and nothing
+// guaranteed it was a well-formed array of well-formed calls. Each shape
+// below used to throw out of runLoop entirely — no envelope, no transcript,
+// the delegate already paid for — instead of degrading like every other
+// malformed-input path in this file already does.
+describe("runLoop malformed tool_calls", () => {
+  it("does not throw when tool_calls is present but not an array", async () => {
+    const malformed = {
+      choices: [{
+        message: { role: "assistant", content: null, tool_calls: {} },
+        finish_reason: "tool_calls",
+      }],
+    } as unknown as ChatResponse;
+    const backend = new ScriptedBackend([malformed]);
+    const r = await runLoop({ ...base, backend, tools: [] });
+    // Non-array tool_calls degrades to "no calls"; combined with no content
+    // that is the capability-failure shape (see the gate below), not a crash.
+    expect(r.status).toBe("error");
+    expect(r.turns).toBe(1);
+  });
+
+  it("does not throw when a call is missing its function, and degrades to an unknown-tool error", async () => {
+    const backend = new ScriptedBackend([
+      {
+        choices: [{
+          message: { role: "assistant", content: null, tool_calls: [{ id: "c1" }] },
+          finish_reason: "tool_calls",
+        }],
+      } as unknown as ChatResponse,
+      assistant("recovered"),
+    ]);
+    const r = await runLoop({ ...base, backend, tools: [] });
+    expect(r.status).toBe("ok");
+    const msg = backend.seen[1]!.messages.find((m) => m.role === "tool") as { content: string };
+    expect(msg.content).toContain("unknown tool");
+  });
+
+  it("does not throw and synthesizes a stable id when a call is missing its id", async () => {
+    const backend = new ScriptedBackend([
+      {
+        choices: [{
+          message: {
+            role: "assistant", content: null,
+            tool_calls: [{ function: { name: "t", arguments: "{}" } }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      } as unknown as ChatResponse,
+      assistant("recovered"),
+    ]);
+    const r = await runLoop({
+      ...base, backend, tools: [fakeTool("t", { content: "x", truncated: false })],
+    });
+    expect(r.status).toBe("ok");
+    const toolMsg = backend.seen[1]!.messages.find((m) => m.role === "tool") as
+      { tool_call_id: string; content: string };
+    // A missing id must never surface as `undefined` — that value drops out
+    // of JSON.stringify and 400s the next real request.
+    expect(typeof toolMsg.tool_call_id).toBe("string");
+    expect(toolMsg.tool_call_id.length).toBeGreaterThan(0);
+    expect(toolMsg.content).toBe("x");
+  });
+});
+
+// A response with no tool calls and no content is exactly the shape a model
+// that cannot call tools produces. Reporting it as a normal `ok` completion
+// (empty summary, empty detail) hides a capability problem as if it were a
+// correct but silent answer.
+describe("runLoop capability gate", () => {
+  it("reports a capability problem, not false success, when a turn has no calls and no content", async () => {
+    const backend = new ScriptedBackend([assistant(null)]);
+    const r = await runLoop({ ...base, model: "some-incapable-model", backend, tools: [] });
+    expect(r.status).toBe("error");
+    expect(r.detail).toContain("some-incapable-model");
+  });
+
+  it("still reports ok when content is present alongside no tool calls", async () => {
+    const backend = new ScriptedBackend([assistant("a real answer")]);
+    const r = await runLoop({ ...base, backend, tools: [] });
+    expect(r.status).toBe("ok");
+    expect(r.summary).toBe("a real answer");
+  });
+});
+
+describe("runLoop protocol conformance", () => {
+  it("answers every issued tool_call_id, including a synthesized fallback for malformed calls", async () => {
+    const backend = new ProtocolValidatingBackend([
+      // Malformed: a call with an id but no `function` at all — the shape
+      // that used to throw at `c.function.name`.
+      {
+        choices: [{
+          message: { role: "assistant", content: null, tool_calls: [{ id: "c1" }] },
+          finish_reason: "tool_calls",
+        }],
+      } as unknown as ChatResponse,
+      // Malformed: a call with no id at all — the shape whose dropped
+      // tool_call_id used to 400 the next request.
+      {
+        choices: [{
+          message: {
+            role: "assistant", content: null,
+            tool_calls: [{ function: { name: "t", arguments: "{}" } }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      } as unknown as ChatResponse,
+      assistant("done"),
+    ]);
+    const r = await runLoop({
+      ...base, backend, tools: [fakeTool("t", { content: "x", truncated: false })],
+    });
+    expect(r.status).toBe("ok");
+    expect(backend.seen).toHaveLength(3);
   });
 });

@@ -1,5 +1,6 @@
 import type {
-  AssistantMessage, Backend, ChatResponse, Message, SamplingParams, Usage,
+  AssistantMessage, Backend, ChatResponse, Message, SamplingParams, ToolCall, Usage,
+  WireToolCall,
 } from "./types";
 import type { Tool } from "./tools/types";
 
@@ -53,6 +54,34 @@ function safeOnTurn(o: LoopOptions, turn: number, elapsedMs: number, toolNames: 
   } catch {
     // swallowed deliberately
   }
+}
+
+/** Appends a marker only when a slice actually cut something, so a diagnostic never reads as complete when it isn't. */
+function markIfCut(text: string, limit: number): string {
+  return text.length > limit ? `${text.slice(0, limit)}…` : text;
+}
+
+/**
+ * A tool call as sent over the wire is fully untrustworthy — an arbitrary
+ * HTTP server controls it, and nothing guarantees `function` or `id` are
+ * present or well-typed. Normalize each into the strict `ToolCall` shape our
+ * own message history requires, degrading a malformed field instead of
+ * letting it crash the loop:
+ *
+ * - A missing/non-string `id` gets a synthesized fallback. Left as
+ *   `undefined`, it would drop out of `JSON.stringify` on the next request
+ *   and 400 it — silently corrupting every turn after this one.
+ * - A missing/non-string tool name degrades to `""`, which `dispatch`
+ *   already turns into a correctable `ERROR: unknown tool` message — the
+ *   same path a real unknown tool name takes, not a special case.
+ */
+function normalizeToolCall(raw: WireToolCall, turn: number, index: number): ToolCall {
+  const id = typeof raw?.id === "string" && raw.id.length > 0
+    ? raw.id
+    : `missing-id-turn${turn}-${index}`;
+  const name = typeof raw?.function?.name === "string" ? raw.function.name : "";
+  const args = typeof raw?.function?.arguments === "string" ? raw.function.arguments : "";
+  return { id, function: { name, arguments: args } };
 }
 
 export async function runLoop(o: LoopOptions): Promise<LoopResult> {
@@ -140,12 +169,16 @@ export async function runLoop(o: LoopOptions): Promise<LoopResult> {
     if (!choice?.message) {
       return done(
         "error", "",
-        `response had no choices: ${JSON.stringify(res).slice(0, 400)}`,
+        `response had no choices: ${markIfCut(JSON.stringify(res), 400)}`,
       );
     }
 
     const msg = choice.message;
-    const calls = msg.tool_calls ?? [];
+    // `tool_calls` is server-controlled and may not even be an array (let
+    // alone an array of well-formed calls) — treat anything else as none,
+    // rather than crashing on `.map`/`.function.name` a turn later.
+    const rawCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+    const calls = rawCalls.map((c, i) => normalizeToolCall(c, turns, i));
     const toolNames = calls.map((c) => c.function.name);
 
     if (choice.finish_reason === "length") {
@@ -163,8 +196,20 @@ export async function runLoop(o: LoopOptions): Promise<LoopResult> {
     if (calls.length === 0) {
       worstTurnMs = Math.max(worstTurnMs, Date.now() - started);
       safeOnTurn(o, turns, Date.now() - started, toolNames);
-      messages.push({ role: "assistant", content: msg.content ?? "" });
-      return done("ok", msg.content ?? "", "");
+      const text = msg.content ?? "";
+      messages.push({ role: "assistant", content: text });
+      if (!text) {
+        // No tool calls and no content is exactly the shape a model that
+        // cannot call tools produces — reporting it as `ok` would hide a
+        // capability problem behind an empty, silently "successful" answer.
+        return done(
+          "error", "",
+          `model '${o.model}' returned no tool calls and no content on turn ${turns} — ` +
+            "likely cannot call tools, not a task failure. Check the model's tool-use " +
+            "capability before retrying.",
+        );
+      }
+      return done("ok", text, "");
     }
 
     messages.push({ role: "assistant", content: msg.content ?? "", tool_calls: calls });
