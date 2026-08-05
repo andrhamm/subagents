@@ -1,0 +1,25 @@
+# Copy to subagents.yaml and edit. Resolution order for --config:
+#   explicit --config, then ./subagents.yaml, then ~/.config/subagents/config.yaml
+providers:
+  local: { base_url: "http://127.0.0.1:1234/v1", kind: lmstudio }
+
+# Sampling is per model family. There is no universal setting, and wrong values
+# produce wrong results that look real. Cite a source for anything added here.
+sampling:
+  # Gemma vendor guidance for factual/extraction work (0.1-0.3 factual).
+  gemma-factual: { temperature: 0.3, top_p: 0.95, top_k: 64 }
+  # Qwen3 non-thinking, vendor published. Qwen forbids greedy decoding.
+  qwen-nonthinking: { temperature: 0.7, top_p: 0.8, top_k: 20 }
+
+tiers:
+  cheap: { provider: local, model: "google/gemma-4-e2b", sampling: gemma-factual }
+  strong: { provider: local, model: "qwen3-coder-next", sampling: qwen-nonthinking }
+
+profiles:
+  digest: { tools: [read_file, glob, grep, list_dir], tier: cheap }
+  audit: { tools: [read_file, glob, grep, list_dir], tier: strong }
+
+defaults:
+  max_turns: 20
+  max_tokens: 8000
+  timeout_ms: 300000
