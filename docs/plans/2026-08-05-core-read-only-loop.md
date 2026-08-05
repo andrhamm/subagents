@@ -1,5 +1,13 @@
 # subagents Core Read-Only Loop — Implementation Plan
 
+> **Superseded:** Task 4's code blocks below (`src/tools/search.ts`,
+> `tests/tools/search.test.ts`) do not match what shipped. An authorized fix
+> during implementation added full omission reporting (excluded directories,
+> unreadable files, cut match lines — not just the match/file cap) and
+> root-relative `list_dir` filtering, neither of which appear in the Task 4
+> listing here. `src/` is authoritative wherever this plan and the code
+> disagree; treat this document as history, not a spec to re-derive from.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A working `subagents run` command that delegates a read-only task to any OpenAI-compatible model and returns a small JSON envelope.

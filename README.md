@@ -3,8 +3,9 @@
 Delegate scoped coding tasks to any OpenAI-compatible model, so an orchestrating
 agent pays a small fixed context cost instead of reading everything itself.
 
-> **Status: design phase.** This repo currently contains the design, the Claude
-> Code plugin scaffolding, and the usage skill. **The CLI is not implemented yet.**
+> **Status: read-only loop ships; writes are planned.** `subagents run` works
+> today against any OpenAI-compatible endpoint, verified against a live model.
+> See [What ships today](#what-ships-today) below for the exact boundary.
 
 ## Why
 
@@ -14,24 +15,37 @@ frontier rates. A local or self-hosted model can absorb that input for free.
 
 The naive workaround — piping a local model's output back through the orchestrator
 — costs *more* context than doing the work directly. So instead: a CLI that runs
-the entire agentic loop against a configured model, reads and edits files itself,
-and returns a small JSON envelope. The transcript lands on disk and is read only
-when something fails.
+the entire agentic loop against a configured model, reads files itself (write
+support is planned, see below), and returns a small JSON envelope. The
+transcript lands on disk and is read only when something fails.
 
 Measured on a repo-wide triage during design: **165,362 tokens burned on the
 delegate, ~850 returned to the caller** — about 195:1.
 
-## What it will do
+## What ships today
 
-- Run an agentic tool-calling loop against any OpenAI-compatible endpoint —
-  LM Studio, Ollama, vLLM, llama.cpp server, LiteLLM, OpenRouter
-- Give the delegate Claude-Code-faithful tools: line-numbered paged reads,
-  uniqueness-checked edits, grep, glob, bash
-- Optional external tools over MCP, under a strict read-only allowlist
-- Isolate writes in a git worktree behind a test gate
-- Return a small envelope: status, summary, diffstat, test result, context
-  pressure, truncation count, transcript path
-- Benchmark any model on *agentic loop* tasks against deterministic ground truth
+- An agentic tool-calling loop against any OpenAI-compatible endpoint —
+  LM Studio, Ollama, vLLM, llama.cpp server, LiteLLM, OpenRouter — via
+  `subagents run`
+- Config with providers, tiers, sampling presets, and per-profile tool
+  allowlists
+- Claude-Code-faithful read-only tools: line-numbered paged reads (`read_file`),
+  deterministic search (`grep`, `glob`, `list_dir`) with full omission
+  reporting for every cap and exclusion, never a silent one
+- A deadline gate: pass `--deadline-secs` and the loop stops before a turn
+  that would overrun it, returning a partial result instead of being killed
+- A small, size-bounded JSON envelope (status, summary, turns, wall time,
+  context usage, truncation count, transcript path) plus the full transcript
+  on disk
+
+## What's planned, not built
+
+- `edit_file` / `write_file`, `bash`, and an MCP client for external tools
+- Git worktree isolation and a test gate for write profiles
+- The LM Studio adapter (capability probe, `context.limit`/`context.pressure`
+  — both are `null` today because nothing populates them yet)
+- Batch scheduling across multiple jobs and models
+- The agentic-loop benchmark harness
 
 ## Which model should I run?
 
@@ -64,7 +78,7 @@ that fixed, a 4.6B model produced exact line citations and fabricated none.
 See [docs/design.md](docs/design.md) for the full design and the measurements
 behind it.
 
-## Install (once implemented)
+## Install (once published)
 
 ```
 /plugin marketplace add andrhamm/subagents

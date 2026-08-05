@@ -4,7 +4,12 @@ Delegate scoped coding tasks to any OpenAI-compatible model, so an orchestrating
 agent (Claude Code, or anything else) pays a small fixed context cost instead of
 reading everything itself.
 
-Status: design. Nothing built yet. Not pushed anywhere.
+Status: the read-only loop below ships and is verified against a live model —
+config, the agentic loop, all four read-only tools, the deadline gate, and the
+envelope. Write tools, the LM Studio adapter, the MCP client, batch
+scheduling, and the benchmark harness are designed here but not built. `src/`
+is authoritative over this document wherever they disagree. Not pushed
+anywhere yet.
 
 ## The problem
 
@@ -116,8 +121,8 @@ the configured root.
 ```yaml
 providers:
   local: { base_url: http://127.0.0.1:1234/v1, kind: lmstudio }
-  lan:   { base_url: http://192.0.2.10:1234/v1, kind: lmstudio }
-  vllm:  { base_url: http://gpu-box:8000/v1, kind: openai }
+  lan:   { base_url: http://lan-host:1234/v1, kind: lmstudio }
+  vllm:  { base_url: http://gpu-host:8000/v1, kind: openai }
 
 sampling:                      # per model family; there is no universal setting
   gemma-factual:      { temperature: 0.3, top_p: 0.95, top_k: 64 }
@@ -134,12 +139,12 @@ profiles:                      # the configurable allowlist
             worktree: true, test_cmd: "npm test" }
 
 mcp:                           # external tool servers, optional
-  carmen:
+  code-search:
     url: http://127.0.0.1:5051/mcp
     tools:                     # strict allowlist; never the whole server
-      - name: code_search
+      - name: search
         caps: { max_results: 10 }
-      - name: code_search_read_file
+      - name: read_file
         caps: { max_lines: 200 }
 ```
 
@@ -170,9 +175,21 @@ Small, stable, and the only thing the orchestrator pays for:
   "truncations": 0,
   "tools_omitted": [],
   "local_tokens": 165362,
-  "transcript": "/path/to/transcript.jsonl"
+  "transcript": "/path/to/transcript.json"
 }
 ```
+
+Shipped as a single pretty-printed JSON object (the full message array plus
+model/task/status/usage), not a `.jsonl` stream.
+
+This is the target shape; today's envelope (`src/envelope.ts`) is a subset:
+`status`, `summary`, `detail`, `turns`, `wall_secs`, `context`, `truncations`,
+`local_tokens`, `transcript`. `status` is one of `ok`, `max_turns`, `budget`,
+`deadline`, `error` — not `stopped`. `files_changed`, `diffstat`, `test`, and
+`tools_omitted` don't exist yet because writes and MCP tools don't. And
+`context.limit`/`context.pressure` are `null` in every run today — nothing
+populates a context limit until the LM Studio adapter lands, so don't read a
+`0.66` like the example above as achievable yet.
 
 `truncations` and `context.pressure` exist because of failure #2 above: the
 orchestrator must be able to see that the delegate was working blind, without
@@ -303,10 +320,10 @@ outcome:** the caller gets truncated stdout, no envelope, and no transcript path
 cannot tell whether any work happened or where the evidence went. A degraded answer is
 enormously better than no answer.
 
-So the harness takes `--deadline-secs` (or `SUBAGENTS_DEADLINE_SECS`), set by the caller
-to somewhat under the shell timeout it used, and treats it as a budget it must not
-overrun. This is the same principle as never truncating a tool result silently: a run
-that stops early must *say* it stopped early, in a form the caller can act on.
+So the harness takes `--deadline-secs`, set by the caller to somewhat under the
+shell timeout it used, and treats it as a budget it must not overrun. This is
+the same principle as never truncating a tool result silently: a run that
+stops early must *say* it stopped early, in a form the caller can act on.
 
 **Check between turns, using observed durations.** After a couple of turns there is
 real per-turn timing for this model, task, and prompt size. Before starting turn N+1,
@@ -321,9 +338,9 @@ Every request gets `min(configured_timeout, remaining_budget − wrapup_reserve)
 **Reserve time to finish cleanly.** Writing the transcript and emitting the envelope is
 not free. The reserve is what guarantees a valid envelope exists.
 
-**Handle SIGTERM as a backstop.** Proactive budgeting is primary, but if the process is
-signalled anyway, flush the transcript and emit an envelope with `status: "interrupted"`
-rather than dying silently.
+**Handle SIGTERM as a backstop (planned, not implemented).** Proactive budgeting is
+primary, but if the process is signalled anyway, flush the transcript and emit an
+envelope with `status: "interrupted"` rather than dying silently.
 
 The envelope reports the stop honestly and tells the caller what to do:
 
