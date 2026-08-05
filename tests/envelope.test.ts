@@ -77,6 +77,40 @@ describe("buildEnvelope", () => {
     expect(JSON.stringify(e).length).toBeLessThan(600);
   });
 
+  // Fix round 1: the favorable fixture above never exercises a delegate that
+  // actually rambles, so it never caught an unbounded summary/detail. These
+  // pathological inputs are the ones that should.
+  it("stays small even when summary and detail are each thousands of characters", () => {
+    const huge: LoopResult = {
+      ...result,
+      summary: "S".repeat(5000),
+      detail: "D".repeat(5000),
+    };
+    const e = buildEnvelope(huge, { wallSecs: 1, transcript: "/t", contextLimit: 32768 });
+    expect(JSON.stringify(e).length).toBeLessThan(600);
+    // Still usable, not silently gutted to nothing.
+    expect(e.summary.length).toBeGreaterThan(0);
+  });
+
+  it("stays small for loop.ts's actual 'response had no choices' error, at full length", () => {
+    // Mirrors loop.ts's real construction: `response had no choices: ${JSON.stringify(res).slice(0, 400)}`.
+    const fakeRes = JSON.stringify({
+      choices: [],
+      usage: { prompt_tokens: 12 },
+      note: 'unexpected shape with "quotes" and a backslash \\ thrown in, ' + "x".repeat(400),
+    });
+    const stopped: LoopResult = {
+      ...result,
+      status: "error",
+      summary: "",
+      detail: `response had no choices: ${fakeRes.slice(0, 400)}`,
+    };
+    const e = buildEnvelope(stopped, { wallSecs: 1, transcript: "/t", contextLimit: null });
+    expect(JSON.stringify(e).length).toBeLessThan(600);
+    // The fallback still surfaces *why*, not just that it was cut.
+    expect(e.summary).toContain("response had no choices");
+  });
+
   // Authorized addition (beyond the brief): most delegates emit `content: null`
   // alongside tool_calls, so on a real deadline/max_turns stop `summary` is
   // usually "" — lastText() in the loop has nothing to return. Without a
@@ -102,12 +136,15 @@ describe("buildEnvelope", () => {
   });
 
   it("keeps both fields when the run produced a summary and a separate detail", () => {
+    // The real message loop.ts emits on finish_reason=length, verbatim.
+    const detail = "finish_reason=length: the token budget ran out before the answer completed. " +
+      "Raise max_tokens, or the loaded context window.";
     const e = buildEnvelope(
-      { ...result, status: "budget", detail: "finish_reason=length" },
+      { ...result, status: "budget", detail },
       { wallSecs: 1, transcript: "/t", contextLimit: null },
     );
     expect(e.summary).toBe("found six routes");
-    expect(e.detail).toBe("finish_reason=length");
+    expect(e.detail).toBe(detail);
   });
 });
 
