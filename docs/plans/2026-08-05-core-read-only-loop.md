@@ -1586,7 +1586,7 @@ async function dispatch(
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `bun test tests/loop.test.ts`
-Expected: PASS, 16 tests.
+Expected: PASS — 4 termination, 6 tool dispatch, 6 deadline, 4 error. Report the count you observe rather than matching a total stated here.
 
 - [ ] **Step 6: Commit**
 
@@ -2151,7 +2151,7 @@ try {
 - [ ] **Step 5: Run the test to verify it passes**
 
 Run: `bun test tests/cli.test.ts`
-Expected: PASS, 3 tests.
+Expected: PASS — one happy path, two argument-error cases, two deadline cases. Report the count you observe.
 
 - [ ] **Step 6: Run the whole suite and typecheck**
 
