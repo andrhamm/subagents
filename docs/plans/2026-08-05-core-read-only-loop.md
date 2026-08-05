@@ -556,16 +556,20 @@ Create `tests/tools/read.test.ts`:
 
 ```ts
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { safePath } from "../../src/tools/paths";
 import { readFile } from "../../src/tools/read";
 
+// safePath realpaths its root, and on macOS mkdtemp gives /var/... while
+// realpath gives /private/var/... — compare against the resolved form.
 let root: string;
+let realRoot: string;
 
 beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), "subagents-read-"));
+  realRoot = realpathSync(root);
   mkdirSync(join(root, "src"));
   writeFileSync(join(root, "src", "small.ts"), "alpha\nbravo\ncharlie\n");
   writeFileSync(
@@ -578,7 +582,7 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 describe("safePath", () => {
   it("resolves a path inside the root", () => {
-    expect(safePath(root, "src/small.ts")).toBe(join(root, "src/small.ts"));
+    expect(safePath(root, "src/small.ts")).toBe(join(realRoot, "src/small.ts"));
   });
 
   it("rejects a path escaping the root", () => {
