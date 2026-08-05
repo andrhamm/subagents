@@ -86,4 +86,44 @@ describe("read_file", () => {
     expect(Object.keys(props).sort()).toEqual(["limit", "offset", "path"]);
     expect(readFile.schema.function.description).toContain("TRUNCATED");
   });
+
+  // A non-numeric offset/limit used to silently coerce to NaN rather than
+  // erroring: `limit: "all"` produced a self-referential TRUNCATED marker
+  // telling the model to retry from the offset it was already at
+  // ("lines 1-0 of 3 ... Continue with offset=1"), and `offset: "start"`
+  // returned an empty, falsely-complete result. Both must fail loudly
+  // instead — `dispatch` already turns a tool throw into a correctable
+  // ERROR: message.
+  it("throws on a non-finite limit instead of producing a self-referential TRUNCATED marker", async () => {
+    await expect(readFile.run({ path: "src/big.ts", limit: "all" }, { root }))
+      .rejects.toThrow(/limit/i);
+  });
+
+  it("throws on a non-finite offset instead of silently returning nothing", async () => {
+    await expect(readFile.run({ path: "src/big.ts", offset: "start" }, { root }))
+      .rejects.toThrow(/offset/i);
+  });
+
+  it("throws on a zero or negative offset", async () => {
+    await expect(readFile.run({ path: "src/big.ts", offset: 0 }, { root }))
+      .rejects.toThrow(/offset/i);
+    await expect(readFile.run({ path: "src/big.ts", offset: -5 }, { root }))
+      .rejects.toThrow(/offset/i);
+  });
+
+  it("throws on a zero or negative limit", async () => {
+    await expect(readFile.run({ path: "src/big.ts", limit: 0 }, { root }))
+      .rejects.toThrow(/limit/i);
+    await expect(readFile.run({ path: "src/big.ts", limit: -1 }, { root }))
+      .rejects.toThrow(/limit/i);
+  });
+
+  it("never names an empty range in a TRUNCATED marker, even for an offset past the end", async () => {
+    // With offset/limit now validated as finite and positive, a truncation
+    // marker naming a shown range with nothing actually shown
+    // (window.length === 0) must never happen — belt-and-braces guard.
+    const r = await readFile.run({ path: "src/big.ts", offset: 505 }, { root });
+    expect(r.content).not.toContain("TRUNCATED");
+    expect(r.truncated).toBe(false);
+  });
 });

@@ -226,16 +226,22 @@ export const listDir: Tool = {
     let total = 0;
     const g = new Glob("**/*");
     for await (const rel of g.scan({ cwd: dir, onlyFiles: true, dot: false })) {
-      // Judge exclusion by the path relative to root, not to `dir` — the
-      // same directory must read the same way regardless of how it's reached.
-      const seg = excludedBy(base ? `${base}/${rel}` : rel);
+      // `rel` is relative to `dir`, the directory asked about — but grep and
+      // glob both return paths relative to root, and read_file takes a
+      // root-relative path too. Emitting `rel` as-is here made a listed
+      // path unusable as a read_file argument for anything but the root
+      // itself. Judge exclusion by the same root-relative path, not `rel`
+      // — the same directory must read the same way regardless of how
+      // it's reached (via traversal from root, or listed directly).
+      const rootRel = base ? `${base}/${rel}` : rel;
+      const seg = excludedBy(rootRel);
       if (seg) {
         omit.excludedCount++;
         omit.excludedNames.add(seg);
         continue;
       }
       total++;
-      if (found.length < MAX_FILES) found.push(rel);
+      if (found.length < MAX_FILES) found.push(rootRel);
     }
     return withOmissions(
       capped(found.sort(), total, "files", "List a subdirectory instead."),

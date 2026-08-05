@@ -35,8 +35,21 @@ export const readFile: Tool = {
     const path = safePath(ctx.root, String(args["path"]));
     const lines = toLines(await Bun.file(path).text());
 
-    const start = Math.max(1, Number(args["offset"] ?? 1));
-    const limit = Math.max(1, Number(args["limit"] ?? MAX_READ_LINES));
+    // A non-numeric offset/limit (e.g. `"all"`, `"start"`) used to coerce
+    // silently to NaN: `Math.max(1, NaN)` is NaN, which then produced either
+    // a self-referential TRUNCATED marker telling the model to retry from
+    // the offset it was already at, or a falsely-complete empty read. Fail
+    // loudly instead — `dispatch` already turns a tool throw into a
+    // correctable ERROR: message, which is the right channel for a bad argument.
+    const start = args["offset"] === undefined ? 1 : Number(args["offset"]);
+    if (!Number.isFinite(start) || start <= 0) {
+      throw new Error(`offset must be a positive number, got ${JSON.stringify(args["offset"])}`);
+    }
+    const limit = args["limit"] === undefined ? MAX_READ_LINES : Number(args["limit"]);
+    if (!Number.isFinite(limit) || limit <= 0) {
+      throw new Error(`limit must be a positive number, got ${JSON.stringify(args["limit"])}`);
+    }
+
     const window = lines.slice(start - 1, start - 1 + limit);
     const body = window
       .map((line, i) => `${String(start + i).padStart(6)}\t${line}`)
@@ -45,7 +58,11 @@ export const readFile: Tool = {
     const end = start - 1 + window.length;
     const withheld = lines.length - end;
 
-    if (withheld > 0) {
+    // window.length === 0 guards against a TRUNCATED marker ever naming an
+    // empty shown range — validated offset/limit above should already make
+    // that impossible, but this is the invariant the marker's honesty rests
+    // on, so it stays enforced directly rather than only by construction.
+    if (withheld > 0 && window.length > 0) {
       return {
         // Four facts, deliberately: range shown, amount withheld, how to
         // continue, and that this is not the whole file. Reword freely; do

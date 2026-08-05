@@ -131,4 +131,15 @@ describe("list_dir", () => {
     expect(r.content).not.toBe("(no files)");
     expect(r.truncated).toBe(true);
   });
+
+  // grep/glob return root-relative paths; list_dir on a non-root directory
+  // used to return paths relative to *that directory* instead, so
+  // list_dir('src') returned "a.ts" rather than "src/a.ts" — unusable as a
+  // read_file argument, and inconsistent with every other search tool.
+  it("returns paths relative to root, not to the listed directory, for a non-root path", async () => {
+    const r = await listDir.run({ path: "src" }, { root });
+    expect(r.content).toContain("src/a.ts");
+    expect(r.content).toContain("src/b.ts");
+    expect(r.content).not.toMatch(/(^|\n)a\.ts(\n|$)/);
+  });
 });
