@@ -234,6 +234,67 @@ Scoring reports recall, precision, citation accuracy, fabrication count, turns,
 wall time, and tokens. Raw responses persist before scoring, so a scoring bug
 costs a re-score rather than a re-run.
 
+## Batch scheduling
+
+A blocking CLI call is free real estate: the orchestrator waits on it regardless, so
+every scheduling decision made *inside* the harness costs zero orchestrator turns.
+A decision left to the caller is paid for twice — once in tokens, once in latency.
+
+So the harness should own a work queue, not just run one task. `subagents batch`
+takes N jobs and returns one rollup. Three things follow:
+
+1. **Model grouping.** Sort jobs by model so each loads exactly once, runs all its
+   jobs, then yields. "Never iterate models without explicit unload/load" stops being
+   an operating rule a human must remember and becomes a scheduling invariant.
+2. **Automated escalation.** The two-pass recipe currently needs the caller to read
+   cheap-tier results and re-dispatch the ambiguous ones. Inside the scheduler, one
+   call covers the whole sweep-then-escalate cycle. This is the larger economy: one
+   job costs ~850 tokens of envelope, so thirty dispatched individually cost ~25k
+   across thirty turns versus one batch returning a rollup.
+3. **Capacity-aware residency.** `--estimate-only` answers "will this fit?" in about a
+   second. The scheduler asks, because the answer decides whether it can hold a cheap
+   and a strong model resident at once and run both passes concurrently, or must
+   serialize with swaps.
+
+### Concurrency: configured, evidenced, tuned by the caller
+
+The throughput ceiling is a property of host × model × prompt shape, not knowable in
+advance. Rather than build an adaptive controller — hard to test, and prone to
+oscillating on a shared host — split the responsibility three ways:
+
+1. **Known hosts declare it.** Where the ceiling has been measured, config states it:
+   `providers.<name>.max_in_flight`. On LM Studio the loaded model's own parallelism is
+   also readable (`lms ps` reports `PARALLEL`) and caps the useful value.
+2. **Unknown hosts get a conservative default.** `max_in_flight: 2` — measured to
+   capture most of the available gain (1.68× of a 1.95× peak) with little risk.
+3. **The harness reports evidence; the caller tunes.** Every run returns what actually
+   happened at the configured level, and the usage skill teaches the orchestrator how
+   to read it and change the setting.
+
+This is why the envelope carries concurrency evidence rather than just a duration:
+
+```json
+"concurrency": {
+  "configured": 4, "achieved_throughput_per_min": 48.0,
+  "latency_p50_secs": 5.6, "latency_max_secs": 11.7,
+  "queue_wait_secs": 0.2, "timeouts": 0, "errors": 0
+}
+```
+
+A widening spread between `latency_p50` and `latency_max` with no throughput gain is
+the signature of queueing rather than parallelism — the same signature observed at
+8-way on a host that peaked at 4. Rising `queue_wait` says the same thing. Those are
+legible to a reasoning caller in a way they are not to a heuristic.
+
+Two cautions the skill must carry: a measured ceiling goes stale the moment another
+user loads something on a shared host, and calibrating against cold requests
+fabricates the speedup outright — one early measurement reported an 8.7× gain whose
+baseline was a cold request including model load.
+
+**Batch mode must be background-capable from the start.** Bash tool invocations cap
+out around 600s, and any batch worth batching exceeds that. Long runs need a progress
+file the caller can poll rather than a call it must block on.
+
 ## Non-goals
 
 - Replacing native subagents. Delegation suits work that is large, mechanical,

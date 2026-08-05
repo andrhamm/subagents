@@ -94,6 +94,45 @@ Measured on one enumeration task: 4.6B scored 5/6 in 13.4s; 80B scored 6/6 in
 34.2s. Re-running 20% of a corpus on the strong model costs far less than running
 all of it there.
 
+## Tuning concurrency
+
+The harness runs at the `max_in_flight` its config declares and reports what actually
+happened. You decide whether to change it. Default is a deliberately conservative 2.
+
+```json
+"concurrency": {
+  "configured": 4, "achieved_throughput_per_min": 48.0,
+  "latency_p50_secs": 5.6, "latency_max_secs": 11.7,
+  "queue_wait_secs": 0.2, "timeouts": 0, "errors": 0
+}
+```
+
+Read it like this:
+
+- **Throughput rose roughly with the setting, spread stayed tight, no timeouts** →
+  room to go higher. Raise it one step.
+- **Throughput flat or lower while `latency_max` pulls away from `latency_p50`** →
+  you are queueing, not parallelising. Lower it. On one measured host, 8-way produced
+  *less* throughput than 4-way while per-request latency spread more than doubled.
+- **`queue_wait_secs` climbing** → same conclusion, more directly.
+- **Any `timeouts` or `errors` above zero** → lower it now and re-run. A saturated
+  host fails requests rather than slowing them.
+
+Expect diminishing returns fast. On the one host measured in detail, 2-way captured
+1.68× and 4-way peaked at 1.95× — most of the benefit arrives at 2.
+
+Two things that will mislead you:
+
+- **A ceiling goes stale.** Shared hosts have other users; a value that was right an
+  hour ago may not be now. Re-read the evidence rather than trusting a past setting.
+- **Cold starts fake enormous gains.** If the first request in a run included a model
+  load, its baseline is worthless — an early measurement elsewhere reported an "8.7×
+  concurrency gain" that was entirely model-load time. Discard the first run after a
+  model change before drawing any conclusion.
+
+Concurrency applies **within one loaded model**. It says nothing about running several
+models at once.
+
 ## Write tasks
 
 Writes carry real risk — the delegate has no permission system of its own.
