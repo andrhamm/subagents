@@ -48,6 +48,20 @@ describe("buildEnvelope", () => {
     expect(e.local_tokens).toBe(500 + 20 + 8000 + 60 + 21628 + 100);
   });
 
+  // Some proxies report usage counts as strings rather than numbers. `+`
+  // on a string operand concatenates instead of adding, so an unguarded sum
+  // silently produced things like "local_tokens": "01005" — a string where
+  // every consumer expects a number.
+  it("sums usage counts numerically even when a backend reports them as strings", () => {
+    const stringy: LoopResult = {
+      ...result,
+      usage: [{ prompt_tokens: "500" as unknown as number, completion_tokens: "5" as unknown as number }],
+    };
+    const e = buildEnvelope(stringy, { wallSecs: 1, transcript: "/t.json", contextLimit: null });
+    expect(e.local_tokens).toBe(505);
+    expect(typeof e.local_tokens).toBe("number");
+  });
+
   it("carries the truncation count so blind runs are visible", () => {
     const e = buildEnvelope(result, {
       wallSecs: 1, transcript: "/t.json", contextLimit: null,

@@ -126,4 +126,57 @@ describe("subagents run", () => {
     expect(env.status).toBe("deadline");
     expect(env.transcript).toBeTruthy();
   });
+
+  it("still emits a valid envelope on stdout when the transcript write fails", async () => {
+    // A directory can never be written as a file — Bun.write throws EISDIR.
+    // The envelope is the only thing writeTranscript's caller (main) has
+    // promised to the caller; an I/O failure on the side channel must not
+    // take that down too.
+    const proc = Bun.spawn(
+      ["bun", CLI, "run", "--profile", "digest", "--task", "where is the answer?",
+       "--root", root, "--config", join(root, "subagents.yaml"), "--transcript", root],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const out = await new Response(proc.stdout).text();
+    const env = JSON.parse(out);
+    expect(env.status).toBe("ok");
+    // Honest, not silent: the envelope's transcript field must say the
+    // write failed rather than pointing at a path with nothing in it.
+    expect(env.transcript).toContain(root);
+    expect(env.transcript.toLowerCase()).toMatch(/fail|error/);
+  });
+
+  it("prints USAGE and exits 0 for 'run --help' instead of a raw parseArgs error", async () => {
+    const proc = Bun.spawn(["bun", CLI, "run", "--help"], { stdout: "pipe", stderr: "pipe" });
+    const out = await new Response(proc.stdout).text();
+    const err = await new Response(proc.stderr).text();
+    expect(await proc.exited).toBe(0);
+    expect(out).toContain("subagents run --profile");
+    expect(err).toBe("");
+  });
+
+  it("writes USAGE to stderr and exits non-zero for a bare invocation, like every other failure path", async () => {
+    const proc = Bun.spawn(["bun", CLI], { stdout: "pipe", stderr: "pipe" });
+    const out = await new Response(proc.stdout).text();
+    const err = await new Response(proc.stderr).text();
+    expect(await proc.exited).toBe(1);
+    expect(err).toContain("subagents run --profile");
+    expect(out).toBe("");
+  });
+
+  it("emits a compact single-line envelope, matching the form the size bound is enforced against", async () => {
+    const proc = Bun.spawn(
+      ["bun", CLI, "run", "--profile", "digest", "--task", "where is the answer?",
+       "--root", root, "--config", join(root, "subagents.yaml")],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const out = await new Response(proc.stdout).text();
+    expect(await proc.exited).toBe(0);
+    // Exactly one trailing newline, no pretty-printed indentation — the
+    // envelope's own size bound (buildEnvelope, 600 chars) is measured
+    // against JSON.stringify(e) with no spacing, so stdout must emit that
+    // same compact form rather than a differently-sized pretty one.
+    expect(out.endsWith("\n")).toBe(true);
+    expect(out.trim().includes("\n")).toBe(false);
+  });
 });

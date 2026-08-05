@@ -120,8 +120,11 @@ export function buildEnvelope(r: LoopResult, o: EnvelopeInputs): Envelope {
       pressure: o.contextLimit ? round(peak / o.contextLimit, 2) : null,
     },
     truncations: r.truncations,
+    // Some proxies report usage counts as strings rather than numbers.
+    // `Number(...) || 0` normalizes either shape to a real number before
+    // summing — a raw `+` would silently string-concatenate instead of add.
     local_tokens: r.usage.reduce(
-      (sum, u) => sum + (u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0), 0),
+      (sum, u) => sum + (Number(u.prompt_tokens) || 0) + (Number(u.completion_tokens) || 0), 0),
     transcript: o.transcript,
   };
 

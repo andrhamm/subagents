@@ -24,6 +24,12 @@ Options:
                        the loop then stops early with status "deadline" and a
                        valid envelope, instead of being killed with no output.
   --verbose            Print per-turn progress to stderr.
+
+Exit codes:
+  0  completed: status "ok".
+  2  ran, but status is not "ok" (max_turns, budget, deadline, or error) —
+     an envelope is still on stdout; read it before treating this as failure.
+  1  never started — nothing on stdout, the error is on stderr.
 `;
 
 function findConfig(explicit?: string): string {
@@ -45,13 +51,28 @@ function findConfig(explicit?: string): string {
 
 async function main(argv: string[]): Promise<number> {
   const command = argv[0];
-  if (!command || command === "--help" || command === "-h") {
+  // --help/-h is a success path: print to stdout, exit 0. Every other
+  // failure to even start prints to stderr, consistent with the "1 = never
+  // started, nothing on stdout" exit-code contract above.
+  if (command === "--help" || command === "-h") {
     process.stdout.write(USAGE);
-    return command ? 0 : 1;
+    return 0;
+  }
+  if (!command) {
+    process.stderr.write(USAGE);
+    return 1;
   }
   if (command !== "run") {
     process.stderr.write(`unknown command '${command}'\n\n${USAGE}`);
     return 1;
+  }
+  // `parseArgs` below runs in strict mode, so an option it doesn't
+  // recognize (like --help itself) throws a raw error instead of the usual
+  // USAGE text. Handle it before parsing rather than special-casing the
+  // parser's own error message.
+  if (argv.includes("--help") || argv.includes("-h")) {
+    process.stdout.write(USAGE);
+    return 0;
   }
 
   const { values } = parseArgs({
@@ -97,11 +118,17 @@ async function main(argv: string[]): Promise<number> {
     ?? join(process.env["TMPDIR"] ?? "/tmp", `subagents-${Date.now()}.json`);
   mkdirSync(resolve(transcriptPath, ".."), { recursive: true });
 
+  // Resolved on its own statement, not inlined into the runLoop call below:
+  // an unknown tool name in the profile must fail before any backend call
+  // is made, and that ordering should hold because it's stated, not because
+  // of where it happens to sit in an object literal's argument evaluation.
+  const tools = resolveTools(run.tools);
+
   const started = Date.now();
   const result = await runLoop({
     backend: new OpenAIBackend(run.baseUrl, process.env["SUBAGENTS_API_KEY"]),
     model: run.model,
-    tools: resolveTools(run.tools),
+    tools,
     task: values.task!,
     maxTurns: run.maxTurns,
     maxTokens: run.maxTokens,
@@ -120,20 +147,34 @@ async function main(argv: string[]): Promise<number> {
       : {}),
   });
 
-  await writeTranscript(transcriptPath, {
-    model: run.model,
-    task: values.task!,
-    status: result.status,
-    messages: result.messages,
-    usage: result.usage,
-  });
+  // The transcript is a side channel, not the envelope's own promise to the
+  // caller: an I/O failure writing it (a full disk, an unwritable path)
+  // must not take down the run that already produced a valid result. If it
+  // fails, say so honestly in the field that would otherwise silently point
+  // at a path with nothing in it.
+  let transcriptField = transcriptPath;
+  try {
+    await writeTranscript(transcriptPath, {
+      model: run.model,
+      task: values.task!,
+      status: result.status,
+      messages: result.messages,
+      usage: result.usage,
+    });
+  } catch (e) {
+    transcriptField =
+      `${transcriptPath} (FAILED to write: ${e instanceof Error ? e.message : String(e)})`;
+  }
 
   const envelope = buildEnvelope(result, {
     wallSecs: (Date.now() - started) / 1000,
-    transcript: transcriptPath,
+    transcript: transcriptField,
     contextLimit: null,
   });
-  process.stdout.write(`${JSON.stringify(envelope, null, 1)}\n`);
+  // Compact, not pretty-printed: buildEnvelope's size bound is measured
+  // against JSON.stringify(envelope) with no spacing, so stdout must emit
+  // exactly that form rather than a differently-sized pretty one.
+  process.stdout.write(`${JSON.stringify(envelope)}\n`);
   return result.status === "ok" ? 0 : 2;
 }
 
