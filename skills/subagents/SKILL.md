@@ -94,6 +94,32 @@ Measured on one enumeration task: 4.6B scored 5/6 in 13.4s; 80B scored 6/6 in
 34.2s. Re-running 20% of a corpus on the strong model costs far less than running
 all of it there.
 
+## Always pass a deadline
+
+You are invoking this through a shell tool with a hard wall-clock limit. If the CLI is
+killed at that limit you get **truncated output and no envelope** — no summary, no
+transcript path, no way to tell whether any work happened.
+
+So tell the harness your budget, set below your own timeout:
+
+```bash
+# shell tool timeout 300s → give the harness 280s
+subagents run --profile digest --task "…" --root . --deadline-secs 280
+```
+
+The harness then tracks its worst observed turn duration and stops before a turn that
+would overrun, returning `status: "deadline"` with the partial findings and the
+transcript path. A partial result you know is partial is useful; being killed is not.
+
+When you get `status: "deadline"`, the remedy depends on why:
+
+- **Turns were slow but progressing** → re-run with a longer shell timeout and a
+  correspondingly larger `--deadline-secs`.
+- **The task was too broad** → narrow it. Delegating "audit every route in the repo" is
+  worse than delegating one directory at a time.
+- **It is genuinely a long job** → run it in the background rather than blocking, and
+  poll the progress file. Anything beyond the 600s shell maximum must work this way.
+
 ## Tuning concurrency
 
 The harness runs at the `max_in_flight` its config declares and reports what actually

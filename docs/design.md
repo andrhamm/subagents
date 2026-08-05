@@ -295,6 +295,55 @@ baseline was a cold request including model load.
 out around 600s, and any batch worth batching exceeds that. Long runs need a progress
 file the caller can poll rather than a call it must block on.
 
+## Deadlines: stop before you are killed
+
+The caller invokes this through a shell tool with a hard wall-clock limit — commonly
+120s by default and 600s maximum. **Being killed at that limit is the worst possible
+outcome:** the caller gets truncated stdout, no envelope, and no transcript path, so it
+cannot tell whether any work happened or where the evidence went. A degraded answer is
+enormously better than no answer.
+
+So the harness takes `--deadline-secs` (or `SUBAGENTS_DEADLINE_SECS`), set by the caller
+to somewhat under the shell timeout it used, and treats it as a budget it must not
+overrun. This is the same principle as never truncating a tool result silently: a run
+that stops early must *say* it stopped early, in a form the caller can act on.
+
+**Check between turns, using observed durations.** After a couple of turns there is
+real per-turn timing for this model, task, and prompt size. Before starting turn N+1,
+stop if `elapsed + observed_worst_turn + wrapup_reserve > deadline`. Use the observed
+**worst** turn, not the mean — the tail is what overruns. One measured run had turns of
+2.3s and 30.2s in the same conversation.
+
+**Clamp the per-request timeout too.** A 300s configured request timeout inside a 120s
+deadline is incoherent: one slow call blows the budget even with between-turn checks.
+Every request gets `min(configured_timeout, remaining_budget − wrapup_reserve)`.
+
+**Reserve time to finish cleanly.** Writing the transcript and emitting the envelope is
+not free. The reserve is what guarantees a valid envelope exists.
+
+**Handle SIGTERM as a backstop.** Proactive budgeting is primary, but if the process is
+signalled anyway, flush the transcript and emit an envelope with `status: "interrupted"`
+rather than dying silently.
+
+The envelope reports the stop honestly and tells the caller what to do:
+
+```json
+{ "status": "deadline",
+  "detail": "stopped after 3 turns with 8s of a 120s budget left; worst observed turn was 30s",
+  "summary": "<partial findings so far>",
+  "turns": 3, "deadline_secs": 120, "transcript": "…" }
+```
+
+`status: "deadline"` is distinct from `ok`, `max_turns`, and `budget` because the caller's
+remedy differs: re-run with a longer shell timeout, narrow the task, or move to batch
+mode. A partial result the caller knows is partial is useful; one it mistakes for
+complete is a defect of the same class as a silently truncated file read.
+
+**In batch mode** the deadline means *stop starting new jobs*. Completed jobs keep their
+envelopes and the rollup names the ones that never ran, so partial batch output stays
+usable. A deadline above the shell maximum is a signal the caller wants background
+execution — the harness should say so rather than accept a budget it cannot honor.
+
 ## Non-goals
 
 - Replacing native subagents. Delegation suits work that is large, mechanical,
