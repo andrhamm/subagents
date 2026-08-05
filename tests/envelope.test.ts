@@ -151,6 +151,45 @@ describe("buildEnvelope", () => {
     expect(JSON.stringify(e).length).toBeLessThan(600);
   });
 
+  // Fix round 2 addendum: a parity sweep showed the round-1 formula's
+  // breach was not a rare coincidence — shifting the ascii prefix length by
+  // a single character flipped BREACH/ok on every step, because whether a
+  // cut landed mid-pair depended purely on parity, and the arithmetic had
+  // no notion of pair boundaries at all (roughly half of adjacent lengths
+  // breached). Sweep a window of adjacent offsets around the same derived
+  // boundary and confirm none of them breach now — the fix must be
+  // structural (true for every offset), not lucky (true for the one offset
+  // already tested above).
+  it("never breaches the bound at any offset near the old cut boundary, not just one", () => {
+    const plain = "A".repeat(5000);
+    const shapeFor = (summary: string) => ({
+      status: "ok",
+      summary,
+      turns: 3,
+      wall_secs: 1,
+      context: { peak_prompt_tokens: 21628, limit: 32768, pressure: 0.66 },
+      truncations: 2,
+      local_tokens: 500 + 20 + 8000 + 60 + 21628 + 100,
+      transcript: "/t",
+    });
+    const fullLen = JSON.stringify(shapeFor(plain)).length;
+    const marker = "...[truncated, see transcript]";
+    const over = fullLen - 600 + 1;
+    const cut = Math.min(plain.length, over + marker.length);
+    const keepIndex = plain.length - cut;
+
+    const emoji = "\u{1F600}";
+    for (let offset = -5; offset <= 5; offset++) {
+      const idx = keepIndex + offset;
+      const rigged = plain.slice(0, idx) + emoji + plain.slice(idx + 2);
+      const e = buildEnvelope(
+        { ...result, summary: rigged, detail: "" },
+        { wallSecs: 1, transcript: "/t", contextLimit: 32768 },
+      );
+      expect(JSON.stringify(e).length).toBeLessThan(600);
+    }
+  });
+
   // Fix round 2, over-truncation: a closed-form cut assumed every removed
   // character costs 1 encoded byte, so it had to overshoot to be safe
   // against escaping — for text that's *mostly* escape-heavy (newlines,
@@ -170,6 +209,24 @@ describe("buildEnvelope", () => {
     // binary search converges on the true maximum fitting prefix, ~384
     // chars for this input).
     expect(e.summary.length).toBeGreaterThan(350);
+  });
+
+  // Fix round 2 addendum: the mixed-content case above still has plenty of
+  // plain characters to fall back on. The worst case is a summary where
+  // *every* character needs escaping — under round 1's formula that meant
+  // `over` overshot text.length entirely and the `Math.min` clamp discarded
+  // the whole field (the reviewer measured zero characters retained out of
+  // 16,000). A gutted field silently reintroduces the empty-summary problem
+  // this task's authorized addition exists to prevent, so this asserts more
+  // than "under the bound" — it asserts real content survives.
+  it("retains meaningful text even when every character needs JSON escaping", () => {
+    const fullyEscaped = '"'.repeat(16000); // worst case: every character costs 2 encoded bytes
+    const e = buildEnvelope(
+      { ...result, summary: fullyEscaped, detail: "" },
+      { wallSecs: 1, transcript: "/t", contextLimit: 32768 },
+    );
+    expect(JSON.stringify(e).length).toBeLessThan(600);
+    expect(e.summary.length).toBeGreaterThan(100);
   });
 
   // Authorized addition (beyond the brief): most delegates emit `content: null`
