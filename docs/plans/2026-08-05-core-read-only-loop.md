@@ -747,7 +747,7 @@ export const readFile: Tool = {
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `bun test tests/tools/read.test.ts`
-Expected: PASS, 11 tests.
+Expected: PASS, 10 tests (3 `safePath`, 7 `read_file`).
 
 - [ ] **Step 7: Commit**
 
@@ -2156,7 +2156,7 @@ Expected: PASS, 3 tests.
 - [ ] **Step 6: Run the whole suite and typecheck**
 
 Run: `bun test && bun run typecheck`
-Expected: all tests pass (49 total), typecheck silent.
+Expected: every test passes and typecheck is silent. Report the actual test count rather than matching a number stated here — a count written in advance drifts as tasks are amended.
 
 - [ ] **Step 7: Verify against a real model**
 
