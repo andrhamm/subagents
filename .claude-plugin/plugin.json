@@ -1,0 +1,23 @@
+{
+  "name": "subagents",
+  "version": "0.1.0",
+  "description": "Delegate scoped coding tasks to any OpenAI-compatible model, for a fixed small context cost",
+  "author": {
+    "name": "Andrew Hammond"
+  },
+  "repository": "https://github.com/andrhamm/subagents",
+  "homepage": "https://github.com/andrhamm/subagents",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "plugin",
+    "subagents",
+    "delegation",
+    "local-models",
+    "lm-studio",
+    "openai-compatible"
+  ],
+  "skills": [
+    "./skills/subagents/"
+  ]
+}

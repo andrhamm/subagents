@@ -1,0 +1,29 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "subagents",
+  "description": "Delegate scoped coding tasks to any OpenAI-compatible model, for a fixed small context cost",
+  "owner": {
+    "name": "Andrew Hammond"
+  },
+  "plugins": [
+    {
+      "name": "subagents",
+      "description": "Run agentic subagents on any OpenAI-compatible endpoint (LM Studio, Ollama, vLLM, llama.cpp, LiteLLM). The delegate reads and edits files directly; the orchestrator gets back a small JSON envelope instead of the whole transcript.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Andrew Hammond"
+      },
+      "source": "./",
+      "category": "productivity",
+      "homepage": "https://github.com/andrhamm/subagents",
+      "tags": [
+        "subagents",
+        "delegation",
+        "local-models",
+        "lm-studio",
+        "openai-compatible",
+        "context-efficiency"
+      ]
+    }
+  ]
+}
