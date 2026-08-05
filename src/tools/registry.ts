@@ -1,0 +1,27 @@
+import type { Tool } from "./types";
+import { readFile } from "./read";
+import { glob, grep, listDir } from "./search";
+
+export const ALL_TOOLS: Record<string, Tool> = {
+  [readFile.name]: readFile,
+  [glob.name]: glob,
+  [grep.name]: grep,
+  [listDir.name]: listDir,
+};
+
+/** Resolve an allowlist of tool names, failing loudly on a typo. */
+export function resolveTools(names: string[]): Tool[] {
+  const out: Tool[] = [];
+  const unknown: string[] = [];
+  for (const name of names) {
+    const tool = ALL_TOOLS[name];
+    if (tool) out.push(tool);
+    else unknown.push(name);
+  }
+  if (unknown.length) {
+    throw new Error(
+      `unknown tool(s): ${unknown.join(", ")}. available: ${Object.keys(ALL_TOOLS).join(", ")}`,
+    );
+  }
+  return out;
+}
