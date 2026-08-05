@@ -60,9 +60,8 @@ describe("OpenAIBackend", () => {
 
   it("throws BackendError on transport failure with diagnostic info", async () => {
     const url = "http://127.0.0.1:1/v1";
-    await expect(new OpenAIBackend(url).chat({ model: "m", messages: [] }, 5000))
-      .rejects.toThrow(BackendError);
-    await expect(new OpenAIBackend(url).chat({ model: "m", messages: [] }, 5000))
-      .rejects.toThrow(new RegExp(`request to ${url} failed`));
+    const call = new OpenAIBackend(url).chat({ model: "m", messages: [] }, 5000);
+    await expect(call).rejects.toThrow(BackendError);
+    await expect(call).rejects.toThrow(/request to http:\/\/127\.0\.0\.1:1\/v1 failed: .+/);
   });
 });
