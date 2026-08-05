@@ -33,6 +33,24 @@ delegate, ~850 returned to the caller** — about 195:1.
   pressure, truncation count, transcript path
 - Benchmark any model on *agentic loop* tasks against deterministic ground truth
 
+## Which model should I run?
+
+**→ [Recommended Models by Hardware Profile](https://github.com/andrhamm/subagents/wiki/Recommended-Models)**
+
+Model picks for hardware from ~8 GB up to 80 GB+, measured throughput and accuracy
+figures, per-family sampling parameters, and the operating gotchas that cost the most
+debugging time.
+
+The short version: the model **must support tool calling** or it will loop uselessly
+producing nothing — and on one installation surveyed, 11 of 27 installed models could
+not, including several well-regarded coding models whose chat templates predate the
+feature. Check first:
+
+```bash
+curl -s http://localhost:1234/api/v0/models \
+  | jq -r '.data[] | select(.capabilities // [] | index("tool_use")) | .id'
+```
+
 ## Design principle
 
 Every failure initially blamed on the models during prototyping turned out to be
