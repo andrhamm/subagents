@@ -3,6 +3,7 @@ import type {
   WireToolCall,
 } from "./types";
 import type { Tool } from "./tools/types";
+import { markIfCut } from "./text";
 
 export type LoopStatus = "ok" | "max_turns" | "budget" | "deadline" | "error";
 
@@ -54,11 +55,6 @@ function safeOnTurn(o: LoopOptions, turn: number, elapsedMs: number, toolNames: 
   } catch {
     // swallowed deliberately
   }
-}
-
-/** Appends a marker only when a slice actually cut something, so a diagnostic never reads as complete when it isn't. */
-function markIfCut(text: string, limit: number): string {
-  return text.length > limit ? `${text.slice(0, limit)}…` : text;
 }
 
 /**

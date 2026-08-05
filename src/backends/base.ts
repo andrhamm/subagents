@@ -1,4 +1,5 @@
 import type { Backend, ChatRequest, ChatResponse } from "../types";
+import { markIfCut } from "../text";
 
 export class BackendError extends Error {}
 
@@ -23,17 +24,21 @@ export class OpenAIBackend implements Backend {
     } catch (e) {
       throw new BackendError(
         `request to ${this.baseUrl} failed: ${e instanceof Error ? e.message : String(e)}`,
+        { cause: e },
       );
     }
 
     const text = await res.text();
     if (!res.ok) {
-      throw new BackendError(`HTTP ${res.status}: ${text.slice(0, 500)}`);
+      throw new BackendError(`HTTP ${res.status}: ${markIfCut(text, 500)}`);
     }
     try {
       return JSON.parse(text) as ChatResponse;
-    } catch {
-      throw new BackendError(`non-JSON response from ${this.baseUrl}: ${text.slice(0, 200)}`);
+    } catch (e) {
+      throw new BackendError(
+        `non-JSON response from ${this.baseUrl}: ${markIfCut(text, 200)}`,
+        { cause: e },
+      );
     }
   }
 }

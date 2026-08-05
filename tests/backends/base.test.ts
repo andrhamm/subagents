@@ -64,4 +64,39 @@ describe("OpenAIBackend", () => {
     await expect(call).rejects.toThrow(BackendError);
     await expect(call).rejects.toThrow(/request to http:\/\/127\.0\.0\.1:1\/v1 failed: .+/);
   });
+
+  it("carries the original transport error as .cause so its stack survives", async () => {
+    const url = "http://127.0.0.1:1/v1";
+    try {
+      await new OpenAIBackend(url).chat({ model: "m", messages: [] }, 5000);
+      throw new Error("expected chat() to throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(BackendError);
+      expect((e as BackendError).cause).toBeInstanceOf(Error);
+    }
+  });
+
+  it("marks a truncated HTTP error body with an ellipsis when it exceeds the 500-char slice", async () => {
+    const url = serve(() => new Response("x".repeat(600), { status: 500 }));
+    const call = new OpenAIBackend(url).chat({ model: "m", messages: [] }, 5000);
+    await expect(call).rejects.toThrow(/…$/);
+  });
+
+  it("does not append an ellipsis to an HTTP error body that fits the slice", async () => {
+    const url = serve(() => new Response("short error", { status: 500 }));
+    const call = new OpenAIBackend(url).chat({ model: "m", messages: [] }, 5000);
+    await expect(call).rejects.not.toThrow(/…/);
+  });
+
+  it("marks a truncated non-JSON body with an ellipsis when it exceeds the 200-char slice", async () => {
+    const url = serve(() => new Response("y".repeat(300)));
+    const call = new OpenAIBackend(url).chat({ model: "m", messages: [] }, 5000);
+    await expect(call).rejects.toThrow(/…$/);
+  });
+
+  it("does not append an ellipsis to a non-JSON body that fits the slice", async () => {
+    const url = serve(() => new Response("nope"));
+    const call = new OpenAIBackend(url).chat({ model: "m", messages: [] }, 5000);
+    await expect(call).rejects.not.toThrow(/…/);
+  });
 });
