@@ -1,0 +1,254 @@
+# subagents — design
+
+Delegate scoped coding tasks to any OpenAI-compatible model, so an orchestrating
+agent (Claude Code, or anything else) pays a small fixed context cost instead of
+reading everything itself.
+
+Status: design. Nothing built yet. Not pushed anywhere.
+
+## The problem
+
+A capable orchestrating agent burns most of its context on *input* — reading
+files, logs, and search results. Native subagents already solve context
+isolation: their intermediate work never reaches the caller. What they don't
+solve is **price**: every subagent token is billed at frontier rates.
+
+A local or self-hosted model can absorb that input for free. The catch is that
+no mainstream agent harness lets you point a subagent at an arbitrary endpoint,
+and the naive workaround — pipe the model's output back through the orchestrator
+— costs *more* context than doing the work directly.
+
+So: a CLI the orchestrator shells out to. It runs the whole agentic loop against
+a configured model, writes files directly, and returns a small envelope. Full
+transcript lands on disk and is read only when something fails.
+
+## What we measured
+
+Real numbers from a throwaway prototype, against `qwen3-coder-next` (80B) and
+`google/gemma-4-e2b` (4.6B) on LM Studio.
+
+Task: enumerate every route in a 494-line TypeScript file that validates a
+request body, with line numbers. Ground truth from `grep`: 6 routes.
+
+| Model | Params | Recall | Citations | Fabricated | Wall | Terminated by |
+|---|---|---|---|---|---|---|
+| `qwen3-coder-next` | 80B | 6/6 | exact | none | 34.2s | tool call |
+| `google/gemma-4-e2b` | 4.6B | 5/6 | exact | none | 13.4s | prose |
+
+Token accounting on a broader repo-wide triage: **165,362 tokens burned on the
+delegate, ~850 returned to the caller** — a ~195:1 ratio. Doing the same reading
+directly would have pinned 40k+ tokens of file contents into the orchestrator's
+context permanently.
+
+A 4.6B model produced exact line citations with zero fabrication. That is the
+single most important result, and it only happened after the harness bugs below
+were fixed.
+
+## The core principle
+
+Every failure initially attributed to the models turned out to be the harness
+being **less careful than Claude Code's own tools**:
+
+1. `read_file` returned unnumbered content → the model counted lines by hand and
+   its citations drifted 4–8 lines late. Fixed by `cat -n` style numbering;
+   citations became exact.
+2. Tool results were silently truncated at 8000 chars → a 494-line file was cut
+   at line 190, hiding 4 of 6 answers. This looked exactly like model laziness.
+   The model even said *"the file appears to be truncated"* and was ignored.
+3. The loop required a `finish` tool call and stored terminal prose as a 300-char
+   error string → a correct 5/6 answer was recorded as a failure and discarded.
+
+**Design rule: mirror Claude Code's tool semantics exactly. Any deviation is a
+bug until proven otherwise.** Corollary: never truncate silently, anywhere.
+
+## Architecture
+
+```
+src/
+  cli.ts               arg parsing, config resolution, dispatch
+  config.ts            schema + load/merge (providers, tiers, sampling, profiles)
+  loop.ts              provider-agnostic agentic loop
+  envelope.ts          result envelope
+  transcript.ts        full message-array persistence
+  backends/
+    base.ts            OpenAI-compatible floor: POST /v1/chat/completions, GET /v1/models
+    lmstudio.ts        extends base: capability probe, residency, TTL, device awareness
+  tools/
+    registry.ts        profile → tool set resolution, schema assembly
+    fs.ts              read_file, glob, grep, edit_file, write_file, list_dir
+    bash.ts            command exec with timeout + allow/deny
+    mcp.ts             MCP Streamable-HTTP client for external tool servers
+  bench/
+    run.ts             agentic-loop benchmark runner
+    score.ts           scoring against deterministic ground truth
+```
+
+Runtime is Bun (TypeScript, no build step, `bun build --compile` for a
+single-file binary).
+
+Each unit is independently testable: the loop takes a backend and a tool
+registry as arguments and knows nothing about HTTP or the filesystem; tools take
+a root and return strings; backends take a request and return a response.
+
+## Tool contract
+
+This is the load-bearing part of the whole design.
+
+| Tool | Semantics |
+|---|---|
+| `read_file` | Line-numbered output. `offset`/`limit`, default 2000 lines. If more remains, append an explicit marker naming the range shown, the count withheld, the `offset` to continue from, and an instruction not to conclude anything about the file yet. |
+| `edit_file` | Exact-substring replace. `old_string` must match exactly once, or the tool returns an error explaining which (not found / N occurrences). Optional `replace_all`. |
+| `write_file` | Whole-file write. Refuses to overwrite a file not yet read in this session. |
+| `grep` | Regex + optional glob filter. Returns `path:line:text`. Capped, with an explicit truncation notice naming how many matches were withheld. |
+| `glob` | Shell glob. Capped, explicit notice. |
+| `list_dir` | Recursive file list. Capped, explicit notice. |
+| `bash` | Timeout, cwd confined to root, config allow/deny patterns. |
+
+**Termination:** an assistant message with content and no tool calls means done.
+No terminator tool is required. A `finish` tool may be *offered* when structured
+output is wanted, but the loop must never depend on it being called.
+
+**Path safety:** every path is resolved with realpath and rejected if it escapes
+the configured root.
+
+## Config
+
+```yaml
+providers:
+  local: { base_url: http://127.0.0.1:1234/v1, kind: lmstudio }
+  lan:   { base_url: http://192.0.2.10:1234/v1, kind: lmstudio }
+  vllm:  { base_url: http://gpu-box:8000/v1, kind: openai }
+
+sampling:                      # per model family; there is no universal setting
+  gemma-factual:      { temperature: 0.3, top_p: 0.95, top_k: 64 }
+  qwen-nonthinking:   { temperature: 0.7, top_p: 0.8,  top_k: 20 }
+  mistral:            { temperature: 0.0 }
+
+tiers:
+  cheap:  { provider: local, model: google/gemma-4-e2b, sampling: gemma-factual }
+  strong: { provider: lan,   model: qwen3-coder-next,   sampling: qwen-nonthinking }
+
+profiles:                      # the configurable allowlist
+  digest: { tools: [read_file, glob, grep], tier: cheap }
+  edit:   { tools: [read_file, glob, grep, edit_file, bash], tier: strong,
+            worktree: true, test_cmd: "npm test" }
+
+mcp:                           # external tool servers, optional
+  carmen:
+    url: http://127.0.0.1:5051/mcp
+    tools:                     # strict allowlist; never the whole server
+      - name: code_search
+        caps: { max_results: 10 }
+      - name: code_search_read_file
+        caps: { max_lines: 200 }
+```
+
+Sampling presets matter more than they look: wrong parameters produce wrong
+results that look real. Qwen thinking models forbid greedy decoding; Mistral's
+own examples use it. There is no universal default, so families are named
+explicitly and the shipped presets cite their source.
+
+**"When present" semantics:** MCP tools are probed at startup. If a server is
+unconfigured or unreachable, its tools are silently omitted from the schema and
+the omission is recorded in the envelope. A missing tool server degrades the run;
+it never fails it.
+
+## Envelope
+
+Small, stable, and the only thing the orchestrator pays for:
+
+```json
+{
+  "status": "ok | stopped | budget | error",
+  "summary": "the delegate's final message",
+  "turns": 4,
+  "wall_secs": 12.0,
+  "files_changed": ["src/rate-limit.ts"],
+  "diffstat": "1 file changed, 1 insertion(+), 1 deletion(-)",
+  "test": { "ran": true, "passed": true, "cmd": "npm test" },
+  "context": { "peak_prompt_tokens": 21628, "limit": 32768, "pressure": 0.66 },
+  "truncations": 0,
+  "tools_omitted": [],
+  "local_tokens": 165362,
+  "transcript": "/path/to/transcript.jsonl"
+}
+```
+
+`truncations` and `context.pressure` exist because of failure #2 above: the
+orchestrator must be able to see that the delegate was working blind, without
+reading the transcript.
+
+`transcript` persists the **full message array**, not just API responses. During
+this session a question came up — had the files changed underneath the model? —
+that the transcript could not answer, because only responses had been saved.
+
+## Backends
+
+The generic floor is `POST /v1/chat/completions` with `tools`, plus
+`GET /v1/models`. That covers LM Studio, Ollama, vLLM, llama.cpp server,
+LiteLLM, OpenRouter, and hosted providers.
+
+Tool-calling support varies wildly across models on those endpoints, so the loop
+must fail loudly and early rather than spinning: if the first response contains
+no tool calls and no usable content, report a capability problem, not a task
+failure.
+
+The `lmstudio` backend adds, all behind detection:
+
+- `GET /api/v0/models` → `capabilities: ["tool_use"]`, `max_context_length`,
+  `state`. Checking this *before* a run is the cheapest possible way to avoid
+  wasting one. Nothing else offers it.
+- Residency control via `lms load/unload/ps`, including context length and TTL.
+- Device awareness. Two traps worth encoding: the same model key can exist on
+  two devices with different builds and parameter counts, and a federated
+  instance may load on a remote device even when given an unprefixed local path.
+  Always verify where a model actually landed before trusting a timing.
+
+Observed but unverified elsewhere: LM Studio held two models resident on one
+host simultaneously, contradicting a "one resident model" assumption. Residency
+limits should be discovered, not assumed.
+
+## Safety
+
+Writes are the risk, and the delegate has no permission system of its own.
+
+- **Worktree isolation** default-on for any profile with write tools. The
+  delegate edits an isolated tree; the orchestrator inspects a diff.
+- **Test gate** — configured command runs after edits. Failure reverts and the
+  envelope reports it.
+- **Never expose write-capable external tools.** An MCP server may offer
+  destructive operations alongside search; the allowlist is explicit per tool,
+  never per server.
+- **Path confinement** on every filesystem tool.
+- **Bash allow/deny** patterns, with a timeout.
+
+## Benchmark
+
+A first-class feature, not an afterthought: score any model on *agentic loop*
+tasks against deterministic ground truth. Published benchmarks measure one-shot
+extraction; nothing measures whether a model can hold a 12-turn tool loop, which
+is the only thing that matters here.
+
+Each fixture pairs a task with a ground-truth oracle (e.g. a `grep` invocation).
+Scoring reports recall, precision, citation accuracy, fabrication count, turns,
+wall time, and tokens. Raw responses persist before scoring, so a scoring bug
+costs a re-score rather than a re-run.
+
+## Non-goals
+
+- Replacing native subagents. Delegation suits work that is large, mechanical,
+  verifiable, and repeated often enough for the token bill to matter.
+- Long-horizon autonomous feature work.
+- Reimplementing hooks, permission modes, or skills.
+- An MCP server interface for this tool. Tool schemas would load into the
+  orchestrator's context permanently, defeating the purpose. A CLI's output is
+  an envelope we control.
+
+## Open questions
+
+1. Does a small model hold a **write** loop on real code? Only evidence is a
+   17-line fixture with a planted bug.
+2. Where does context pressure actually bite on multi-file work at 128k+?
+3. Is a repo map worth building, or do numbered paged reads plus grep suffice?
+4. Should the orchestrator-side skill auto-route by task shape, or always be
+   explicit about tier?
