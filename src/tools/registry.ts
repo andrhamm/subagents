@@ -14,8 +14,10 @@ export function resolveTools(names: string[]): Tool[] {
   const out: Tool[] = [];
   const unknown: string[] = [];
   for (const name of names) {
-    const tool = ALL_TOOLS[name];
-    if (tool) out.push(tool);
+    // A plain `ALL_TOOLS[name]` lookup also resolves inherited
+    // Object.prototype properties (e.g. "toString"), which are truthy but
+    // not tools. `hasOwn` restricts the lookup to keys actually assigned above.
+    if (Object.hasOwn(ALL_TOOLS, name)) out.push(ALL_TOOLS[name]!);
     else unknown.push(name);
   }
   if (unknown.length) {

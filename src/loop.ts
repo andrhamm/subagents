@@ -46,6 +46,15 @@ export const DEFAULT_SYSTEM_PROMPT =
   "List what you found; never state totals or counts.\n" +
   "When you have the answer, state it directly; do not call another tool.";
 
+/** A broken progress callback (e.g. EPIPE from a closed pipe) must not cost the caller its result. */
+function safeOnTurn(o: LoopOptions, turn: number, elapsedMs: number, toolNames: string[]): void {
+  try {
+    o.onTurn?.(turn, elapsedMs / 1000, toolNames);
+  } catch {
+    // swallowed deliberately
+  }
+}
+
 export async function runLoop(o: LoopOptions): Promise<LoopResult> {
   const byName = new Map(o.tools.map((t) => [t.name, t]));
   const schemas = o.tools.map((t) => t.schema);
@@ -65,7 +74,18 @@ export async function runLoop(o: LoopOptions): Promise<LoopResult> {
   const lastText = (): string =>
     [...messages].reverse().find(
       (m): m is AssistantMessage => m.role === "assistant")?.content ?? "";
-  /** Worst turn seen so far. The tail overruns budgets, not the mean. */
+  /**
+   * Worst full turn seen so far — backend latency plus every tool call it
+   * dispatched. The tail overruns budgets, not the mean, and tool execution
+   * is invisible to the caller's shell timeout exactly like backend latency
+   * is: both must count, or the gate would let a turn start that a slow
+   * tool call (not just a slow model) blows past the deadline.
+   *
+   * Residual risk, accepted rather than fixed: nothing bounds a single
+   * tool call's own duration, so this can only learn from an overrun after
+   * the fact, never prevent the first one. A pathological first call can
+   * still run past the deadline once; after that the gate adapts.
+   */
   let worstTurnMs = 0;
 
   while (turns < o.maxTurns) {
@@ -110,12 +130,14 @@ export async function runLoop(o: LoopOptions): Promise<LoopResult> {
       return done("error", "", e instanceof Error ? e.message : String(e));
     }
 
-    worstTurnMs = Math.max(worstTurnMs, Date.now() - started);
-
     if (res.usage) usage.push(res.usage);
 
     const choice = res.choices?.[0];
-    if (!choice) {
+    // A malformed or streaming-shaped response (finish_reason with no
+    // `message`, or a `delta`-shaped choice) is treated the same as an
+    // empty `choices` array: no usable answer, fail loudly rather than
+    // throw and lose the run's result entirely.
+    if (!choice?.message) {
       return done(
         "error", "",
         `response had no choices: ${JSON.stringify(res).slice(0, 400)}`,
@@ -124,9 +146,12 @@ export async function runLoop(o: LoopOptions): Promise<LoopResult> {
 
     const msg = choice.message;
     const calls = msg.tool_calls ?? [];
-    o.onTurn?.(turns, (Date.now() - started) / 1000, calls.map((c) => c.function.name));
+    const toolNames = calls.map((c) => c.function.name);
 
     if (choice.finish_reason === "length") {
+      worstTurnMs = Math.max(worstTurnMs, Date.now() - started);
+      safeOnTurn(o, turns, Date.now() - started, toolNames);
+      messages.push({ role: "assistant", content: msg.content ?? "" });
       return done(
         "budget", msg.content ?? "",
         "finish_reason=length: the token budget ran out before the answer completed. " +
@@ -136,6 +161,8 @@ export async function runLoop(o: LoopOptions): Promise<LoopResult> {
 
     // Completion: the agent stopped asking for tools. No terminator tool needed.
     if (calls.length === 0) {
+      worstTurnMs = Math.max(worstTurnMs, Date.now() - started);
+      safeOnTurn(o, turns, Date.now() - started, toolNames);
       messages.push({ role: "assistant", content: msg.content ?? "" });
       return done("ok", msg.content ?? "", "");
     }
@@ -150,6 +177,12 @@ export async function runLoop(o: LoopOptions): Promise<LoopResult> {
           () => { truncations++; }),
       });
     }
+
+    // The full iteration cost — backend latency plus every tool call just
+    // dispatched — is what the next turn's gate needs, not just the chat
+    // round trip measured above.
+    worstTurnMs = Math.max(worstTurnMs, Date.now() - started);
+    safeOnTurn(o, turns, Date.now() - started, toolNames);
   }
 
   return done(

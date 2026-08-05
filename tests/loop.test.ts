@@ -73,6 +73,10 @@ describe("runLoop termination", () => {
     expect(r.status).toBe("ok");
   });
 
+  it("does not resolve inherited Object.prototype properties as tools", () => {
+    expect(() => resolveTools(["toString"])).toThrow(/unknown tool/);
+  });
+
   it("reports budget exhaustion from finish_reason=length", async () => {
     const backend = new ScriptedBackend([{
       choices: [{ message: { role: "assistant", content: "half an ans" }, finish_reason: "length" }],
@@ -232,9 +236,11 @@ describe("runLoop deadline", () => {
       deadlineAt: Date.now() + 5_000,
       wrapupReserveMs: 1_000,
     });
-    // Budget was ~4s after reserve, far below the configured 300s.
-    expect(backend.timeouts[0]!).toBeLessThan(5_000);
-    expect(backend.timeouts[0]!).toBeGreaterThan(0);
+    // Budget was ~4s after reserve, far below the configured 300s. Banded
+    // tightly: a clamp that ignored `reserve` entirely would land near 5s
+    // and slip past a loose upper bound.
+    expect(backend.timeouts[0]!).toBeGreaterThan(3_500);
+    expect(backend.timeouts[0]!).toBeLessThanOrEqual(4_000);
   });
 
   it("never clamps the request timeout below a usable floor", async () => {
@@ -242,7 +248,10 @@ describe("runLoop deadline", () => {
     await runLoop({
       ...base, backend, maxTurns: 1, timeoutMs: 300_000,
       tools: [fakeTool("t", { content: "x", truncated: false })],
-      deadlineAt: Date.now() + 1_100,
+      // 900ms of headroom after the 1s reserve — below the floor, so this
+      // exercises the clamp without leaving so little time that the gate
+      // refuses the turn outright (which would never call chat at all).
+      deadlineAt: Date.now() + 1_900,
       wrapupReserveMs: 1_000,
     });
     expect(backend.timeouts[0]!).toBeGreaterThanOrEqual(1_000);
@@ -252,6 +261,42 @@ describe("runLoop deadline", () => {
     const backend = new ScriptedBackend([assistant("done")]);
     const r = await runLoop({ ...base, backend, tools: [] });
     expect(r.status).toBe("ok");
+  });
+
+  it("counts tool execution time toward the worst observed turn, not just backend latency", async () => {
+    /** Replies instantly — every turn's real cost is the tool below, not the backend. */
+    class InstantBackend implements Backend {
+      public calls = 0;
+      async chat(): Promise<ChatResponse> {
+        this.calls++;
+        return assistant(`turn ${this.calls}`, [["c", "t", "{}"]]);
+      }
+    }
+    const slowTool: Tool = {
+      name: "t",
+      schema: {
+        type: "function",
+        function: { name: "t", description: "d", parameters: { type: "object", properties: {} } },
+      },
+      async run() {
+        await Bun.sleep(150);
+        return { content: "x", truncated: false };
+      },
+    };
+    const backend = new InstantBackend();
+    const r = await runLoop({
+      ...base, backend, maxTurns: 50,
+      tools: [slowTool],
+      deadlineAt: Date.now() + 300,
+      wrapupReserveMs: 50,
+    });
+    expect(r.status).toBe("deadline");
+    // A gate that measured only backend latency (near-zero here) would see
+    // no reason to refuse a second turn, since it never learns that the
+    // *tool* took 150ms. It would proceed, and only notice the deadline
+    // after two turns' worth of tool time had already elapsed. A gate that
+    // counts the full turn refuses before starting turn 2.
+    expect(r.turns).toBe(1);
   });
 });
 
@@ -268,6 +313,26 @@ describe("runLoop errors", () => {
     const r = await runLoop({ ...base, backend, tools: [] });
     expect(r.status).toBe("error");
     expect(r.detail).toContain("no choices");
+  });
+
+  it("returns error status, not a rejected promise, when a choice has no message", async () => {
+    // Shapes a real server could send: a truncated/streaming-style choice
+    // with no `message` field at all.
+    const malformed = { choices: [{ finish_reason: "stop" }] } as unknown as ChatResponse;
+    const backend = new ScriptedBackend([malformed]);
+    const r = await runLoop({ ...base, backend, tools: [] });
+    expect(r.status).toBe("error");
+    expect(r.detail).toContain("no choices");
+  });
+
+  it("does not let a throwing onTurn callback break the run", async () => {
+    const backend = new ScriptedBackend([assistant("done")]);
+    const r = await runLoop({
+      ...base, backend, tools: [],
+      onTurn: () => { throw new Error("EPIPE"); },
+    });
+    expect(r.status).toBe("ok");
+    expect(r.summary).toBe("done");
   });
 
   it("passes sampling parameters through to the backend", async () => {
