@@ -28,7 +28,18 @@ export interface ScheduleOptions {
    * progress file costs the poller one re-poll, not correctness.
    */
   onUpdate?(state: BatchState): void;
+  /**
+   * Absolute epoch-ms budget. Gates STARTS only: a running job finishes and
+   * keeps its envelope; jobs never started land in `notRun` — named, not
+   * silently dropped. The single-run deadline machinery handles in-flight
+   * overruns; the batch's job is to stop feeding the queue.
+   */
+  deadlineAt?: number;
+  /** Time reserved to assemble the rollup. */
+  reserveMs?: number;
 }
+
+export const DEFAULT_BATCH_RESERVE_MS = 2000;
 
 export interface ScheduleResult {
   results: JobResult[];
@@ -60,22 +71,41 @@ export async function schedule(o: ScheduleOptions): Promise<ScheduleResult> {
   const started = new Set<string>();
 
   const emit = (): void => {
-    o.onUpdate?.({
-      total: o.jobs.length,
-      done: [...done],
-      running: [...running],
-      pending: o.jobs
-        .filter((j) => !started.has(j.id) && !notRun.includes(j.id))
-        .map((j) => j.id),
-      not_run: [...notRun],
-    });
+    try {
+      o.onUpdate?.({
+        total: o.jobs.length,
+        done: [...done],
+        running: [...running],
+        pending: o.jobs
+          .filter((j) => !started.has(j.id) && !notRun.includes(j.id))
+          .map((j) => j.id),
+        not_run: [...notRun],
+      });
+    } catch {
+      // advisory observer must not take down the batch
+    }
   };
 
   for (const group of groups.values()) {
+    if (
+      o.deadlineAt !== undefined &&
+      Date.now() + (o.reserveMs ?? DEFAULT_BATCH_RESERVE_MS) >= o.deadlineAt
+    ) {
+      for (const j of group) notRun.push(j.id);
+      continue;
+    }
     const queue = [...group];
     const width = Math.min(Math.max(1, group[0]!.run.maxInFlight), group.length);
     const worker = async (): Promise<void> => {
       for (;;) {
+        if (
+          o.deadlineAt !== undefined &&
+          Date.now() + (o.reserveMs ?? DEFAULT_BATCH_RESERVE_MS) >= o.deadlineAt
+        ) {
+          for (const j of queue.splice(0)) notRun.push(j.id);
+          emit();
+          return;
+        }
         const job = queue.shift();
         if (!job) return;
         started.add(job.id);

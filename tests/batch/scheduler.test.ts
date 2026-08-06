@@ -102,3 +102,60 @@ describe("schedule", () => {
     expect(last.pending).toEqual([]);
   });
 });
+
+describe("schedule deadline", () => {
+  it("stops starting jobs at the deadline and names the ones that never ran", async () => {
+    const ran: string[] = [];
+    const { results, notRun } = await schedule({
+      jobs: [job("a", "m"), job("b", "m"), job("c", "m"), job("d", "m")],
+      runJob: async (j) => {
+        ran.push(j.id);
+        await Bun.sleep(120);
+        return envelope(j.id);
+      },
+      deadlineAt: Date.now() + 200,
+      reserveMs: 50,
+    });
+    expect(ran.length).toBeGreaterThan(0);
+    expect(ran.length).toBeLessThan(4);
+    expect(notRun.length).toBe(4 - ran.length);
+    // Every job is accounted for exactly once — completed or named, never dropped.
+    const all = [...results.map((r) => r.id), ...notRun].sort();
+    expect(all).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("lets an already-running job finish rather than killing it", async () => {
+    const { results } = await schedule({
+      jobs: [job("slow", "m"), job("late", "m")],
+      runJob: async (j) => {
+        await Bun.sleep(150);
+        return envelope(j.id);
+      },
+      deadlineAt: Date.now() + 100,
+      reserveMs: 10,
+    });
+    // "slow" started before the deadline hit and completes with an envelope.
+    expect(results.find((r) => r.id === "slow")!.envelope).not.toBeNull();
+  });
+
+  it("marks every job not_run when the deadline is already spent", async () => {
+    const { results, notRun } = await schedule({
+      jobs: [job("a", "m"), job("b", "m")],
+      runJob: async (j) => envelope(j.id),
+      deadlineAt: Date.now() - 1,
+    });
+    expect(results).toEqual([]);
+    expect(notRun.sort()).toEqual(["a", "b"]);
+  });
+
+  it("surfaces not_run through onUpdate's final state", async () => {
+    const states: BatchState[] = [];
+    await schedule({
+      jobs: [job("a", "m")],
+      runJob: async (j) => envelope(j.id),
+      deadlineAt: Date.now() - 1,
+      onUpdate: (s) => states.push(structuredClone(s)),
+    });
+    expect(states[states.length - 1]!.not_run).toEqual(["a"]);
+  });
+});
