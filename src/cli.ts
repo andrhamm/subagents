@@ -4,13 +4,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseConfig, resolveProfile } from "./config";
-import { OpenAIBackend } from "./backends/base";
-import { hasWriteTools, resolveTools } from "./tools/registry";
-import { DEFAULT_SYSTEM_PROMPT, WRITE_SYSTEM_PROMPT_SUFFIX, runLoop } from "./loop";
-import { buildEnvelope, type WriteOutcome } from "./envelope";
-import { assertGitRepo, collectChanges, createWorktree, removeWorktree } from "./worktree";
-import { runTestGate } from "./testgate";
-import { writeTranscript } from "./transcript";
+import { executeRun } from "./run";
 
 const USAGE = `subagents run --profile <name> --task <text> [options]
 
@@ -169,46 +163,18 @@ async function main(argv: string[]): Promise<number> {
     ?? join(process.env["TMPDIR"] ?? "/tmp", `subagents-${Date.now()}.json`);
   mkdirSync(resolve(transcriptPath, ".."), { recursive: true });
 
-  // Resolved on its own statement, not inlined into the runLoop call below:
-  // an unknown tool name in the profile must fail before any backend call
-  // is made, and that ordering should hold because it's stated, not because
-  // of where it happens to sit in an object literal's argument evaluation.
-  const tools = resolveTools(run.tools);
-  const writes = hasWriteTools(run.tools);
-
-  // The deadline clock starts before worktree creation — setup time is
-  // inside the caller's budget, not in addition to it.
   const started = Date.now();
-
-  // Everything from here on is a can't-start check or the run itself; a
-  // worktree failure here (not a repo, git missing) is exit 1 with nothing
-  // on stdout, same as a bad profile.
-  let loopRoot = root;
-  let worktreeDir: string | undefined;
-  if (run.worktree) {
-    await assertGitRepo(root);
-    worktreeDir = join(
-      process.env["TMPDIR"] ?? "/tmp", `subagents-wt-${Date.now()}`);
-    await createWorktree(root, worktreeDir);
-    loopRoot = worktreeDir;
-  }
-
-  const result = await runLoop({
-    backend: new OpenAIBackend(run.baseUrl, process.env["SUBAGENTS_API_KEY"]),
-    model: run.model,
-    tools,
+  const { envelope, clean } = await executeRun({
+    run,
     task: values.task!,
-    maxTurns: run.maxTurns,
-    maxTokens: run.maxTokens,
-    sampling: run.sampling,
-    timeoutMs: run.timeoutMs,
-    root: loopRoot,
-    ...(writes
-      ? { systemPrompt: DEFAULT_SYSTEM_PROMPT + WRITE_SYSTEM_PROMPT_SUFFIX }
-      : {}),
+    root,
+    transcriptPath,
     ...(deadlineSecs === undefined
       ? {}
       : { deadlineAt: started + deadlineSecs * 1000 }),
+    ...(process.env["SUBAGENTS_API_KEY"]
+      ? { apiKey: process.env["SUBAGENTS_API_KEY"] }
+      : {}),
     ...(values.verbose
       ? {
           onTurn: (turn: number, secs: number, names: string[]) =>
@@ -218,76 +184,11 @@ async function main(argv: string[]): Promise<number> {
       : {}),
   });
 
-  // Post-loop inspection is a side channel, like the transcript below: its
-  // failure must degrade a field honestly, never cost the caller the
-  // envelope the run already earned.
-  let writeOutcome: WriteOutcome | undefined;
-  let testOutput: string | undefined;
-  if (worktreeDir) {
-    try {
-      const changes = await collectChanges(worktreeDir);
-      if (changes.files.length === 0) {
-        await removeWorktree(root, worktreeDir);
-      } else {
-        writeOutcome = {
-          files: changes.files,
-          diffstat: changes.diffstat,
-          worktree: worktreeDir,
-        };
-        if (run.testCmd) {
-          const gate = await runTestGate(run.testCmd, worktreeDir, run.testTimeoutMs);
-          writeOutcome.test = { ran: true, passed: gate.passed, cmd: run.testCmd };
-          testOutput = gate.timedOut
-            ? `[test gate timed out after ${run.testTimeoutMs}ms]\n${gate.output}`
-            : gate.output;
-        }
-      }
-    } catch (e) {
-      writeOutcome = {
-        files: [],
-        diffstat:
-          `(FAILED to inspect worktree: ${e instanceof Error ? e.message : String(e)})`,
-        worktree: worktreeDir,
-      };
-    }
-  }
-
-  // The transcript is a side channel, not the envelope's own promise to the
-  // caller: an I/O failure writing it (a full disk, an unwritable path)
-  // must not take down the run that already produced a valid result. If it
-  // fails, say so honestly in the field that would otherwise silently point
-  // at a path with nothing in it.
-  let transcriptField = transcriptPath;
-  try {
-    await writeTranscript(transcriptPath, {
-      model: run.model,
-      task: values.task!,
-      status: result.status,
-      messages: result.messages,
-      usage: result.usage,
-      ...(testOutput !== undefined ? { test_output: testOutput } : {}),
-    });
-  } catch (e) {
-    transcriptField =
-      `${transcriptPath} (FAILED to write: ${e instanceof Error ? e.message : String(e)})`;
-  }
-
-  const envelope = buildEnvelope(result, {
-    wallSecs: (Date.now() - started) / 1000,
-    transcript: transcriptField,
-    contextLimit: null,
-    ...(writeOutcome ? { writes: writeOutcome } : {}),
-  });
   // Compact, not pretty-printed: buildEnvelope's size bound is measured
   // against JSON.stringify(envelope) with no spacing, so stdout must emit
   // exactly that form rather than a differently-sized pretty one.
   process.stdout.write(`${JSON.stringify(envelope)}\n`);
-
-  // 0 now means "nothing needs your attention": the loop completed AND the
-  // gate (when one ran) passed. A failed gate is exit 2 with an honest
-  // envelope — same class as max_turns: ran, but read before trusting.
-  const gateFailed = writeOutcome?.test !== undefined && !writeOutcome.test.passed;
-  return result.status === "ok" && !gateFailed ? 0 : 2;
+  return clean ? 0 : 2;
 }
 
 try {
