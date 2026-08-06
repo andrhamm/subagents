@@ -4,9 +4,10 @@ Delegate scoped coding tasks to any OpenAI-compatible model, so an orchestrating
 agent (Claude Code, or anything else) pays a small fixed context cost instead of
 reading everything itself.
 
-Status: the read-only loop below ships and is verified against a live model —
-config, the agentic loop, all four read-only tools, the deadline gate, and the
-envelope. Write tools, the LM Studio adapter, the MCP client, batch
+Status: the read-only loop, write tools, worktree isolation, and test gate below
+ship and are verified against a live model — config, the agentic loop, all six
+tools (four read-only, two write), the deadline gate, worktree lifecycle, test
+execution, and the envelope. The LM Studio adapter, the MCP client, batch
 scheduling, and the benchmark harness are designed here but not built. `src/`
 is authoritative over this document wherever they disagree. Not pushed
 anywhere yet.
@@ -107,7 +108,7 @@ This is the load-bearing part of the whole design.
 | `grep` | Regex + optional glob filter. Returns `path:line:text`. Capped, with an explicit truncation notice naming how many matches were withheld. |
 | `glob` | Shell glob. Capped, explicit notice. |
 | `list_dir` | Recursive file list. Capped, explicit notice. |
-| `bash` | Timeout, cwd confined to root, config allow/deny patterns. |
+| `bash` | (planned) Timeout, cwd confined to root, config allow/deny patterns. |
 
 **Termination:** an assistant message with content and no tool calls means done.
 No terminator tool is required. A `finish` tool may be *offered* when structured
@@ -182,14 +183,15 @@ Small, stable, and the only thing the orchestrator pays for:
 Shipped as a single pretty-printed JSON object (the full message array plus
 model/task/status/usage), not a `.jsonl` stream.
 
-This is the target shape; today's envelope (`src/envelope.ts`) is a subset:
+This is the target shape; today's envelope (`src/envelope.ts`) has most of it:
 `status`, `summary`, `detail`, `turns`, `wall_secs`, `context`, `truncations`,
-`local_tokens`, `transcript`. `status` is one of `ok`, `max_turns`, `budget`,
-`deadline`, `error` — not `stopped`. `files_changed`, `diffstat`, `test`, and
-`tools_omitted` don't exist yet because writes and MCP tools don't. And
-`context.limit`/`context.pressure` are `null` in every run today — nothing
-populates a context limit until the LM Studio adapter lands, so don't read a
-`0.66` like the example above as achievable yet.
+`local_tokens`, `transcript`, `files_changed`, `diffstat`, `test`, and
+`worktree` now exist for write runs. `status` is one of `ok`, `max_turns`,
+`budget`, `deadline`, `error` — not `stopped`. `tools_omitted` still doesn't
+exist because the MCP client doesn't. And `context.limit`/`context.pressure`
+are `null` in every run today — nothing populates a context limit until the LM
+Studio adapter lands, so don't read a `0.66` like the example above as
+achievable yet.
 
 `truncations` and `context.pressure` exist because of failure #2 above: the
 orchestrator must be able to see that the delegate was working blind, without
@@ -231,8 +233,10 @@ Writes are the risk, and the delegate has no permission system of its own.
 
 - **Worktree isolation** default-on for any profile with write tools. The
   delegate edits an isolated tree; the orchestrator inspects a diff.
-- **Test gate** — configured command runs after edits. Failure reverts and the
-  envelope reports it.
+- **Test gate** — the profile's `test_cmd` runs in the worktree after edits.
+  Failure is *reported, not reverted*: with worktree isolation the diff is the
+  deliverable, and a failed-but-close diff is salvageable by the orchestrator.
+  (Earlier drafts said "revert"; that predates worktree-by-default.)
 - **Never expose write-capable external tools.** An MCP server may offer
   destructive operations alongside search; the allowlist is explicit per tool,
   never per server.

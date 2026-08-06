@@ -3,9 +3,10 @@
 Delegate scoped coding tasks to any OpenAI-compatible model, so an orchestrating
 agent pays a small fixed context cost instead of reading everything itself.
 
-> **Status: read-only loop ships; writes are planned.** `subagents run` works
-> today against any OpenAI-compatible endpoint, verified against a live model.
-> See [What ships today](#what-ships-today) below for the exact boundary.
+> **Status: read-only loop and worktree-confined writes ship; bash, MCP, and
+> batch are planned.** `subagents run` works today against any OpenAI-compatible
+> endpoint, verified against a live model. See [What ships today](#what-ships-today)
+> below for the exact boundary.
 
 ## Why
 
@@ -37,11 +38,19 @@ delegate, ~850 returned to the caller** — about 195:1.
 - A small, size-bounded JSON envelope (status, summary, turns, wall time,
   context usage, truncation count, transcript path) plus the full transcript
   on disk
+- Write support: `edit_file` (exact-substring replace, unique match, read-before-edit)
+  and `write_file` (create, or overwrite-after-read), confined to a git worktree
+  detached at HEAD — the delegate never touches your working tree, and sees your
+  last commit, not uncommitted changes
+- A test gate: a write profile's `test_cmd` runs in the worktree after the loop;
+  the envelope reports the verdict, and a failed gate keeps the worktree so the
+  diff can still be inspected
 
 ## What's planned, not built
 
-- `edit_file` / `write_file`, `bash`, and an MCP client for external tools
-- Git worktree isolation and a test gate for write profiles
+- `bash` as a model-callable tool (the harness-run test gate exists; arbitrary
+  commands do not)
+- An MCP client for external tools
 - The LM Studio adapter (capability probe, `context.limit`/`context.pressure`
   — both are `null` today because nothing populates them yet)
 - Batch scheduling across multiple jobs and models

@@ -18,8 +18,13 @@ tiers:
 profiles:
   digest: { tools: [read_file, glob, grep, list_dir], tier: cheap }
   audit: { tools: [read_file, glob, grep, list_dir], tier: strong }
+  # Write profile: runs in a git worktree detached at HEAD; the envelope
+  # reports the worktree path and diffstat. test_cmd runs there after the
+  # loop — a failed gate keeps the worktree and exits 2.
+  fix: { tools: [read_file, glob, grep, edit_file, write_file], tier: strong, test_cmd: "bun test" }
 
 defaults:
   max_turns: 20
   max_tokens: 8000
   timeout_ms: 300000
+  test_timeout_ms: 120000

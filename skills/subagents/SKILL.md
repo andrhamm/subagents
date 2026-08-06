@@ -1,28 +1,29 @@
 ---
 name: subagents
-description: Use when delegating a scoped, read-only investigation to a local or self-hosted model instead of doing it yourself — bulk triage across many files, digesting large logs or diffs, enumerating patterns repo-wide. Triggers on delegate, subagent, local model, LM Studio, Ollama, offload, cheap pass, bulk audit, save tokens, save context. Load before invoking the subagents CLI.
+description: Use when delegating a scoped, read-only investigation to a local or self-hosted model instead of doing it yourself — bulk triage across many files, digesting large logs or diffs, enumerating patterns repo-wide, delegated small edits with a test gate. Triggers on delegate, subagent, local model, LM Studio, Ollama, offload, cheap pass, bulk audit, save tokens, save context. Load before invoking the subagents CLI.
 user-invocable: true
 ---
 
 # subagents
 
-Run a read-only agentic subagent against any OpenAI-compatible endpoint. The
-delegate runs its own tool-calling loop — reading files, globbing, and
-grepping — and returns a small JSON envelope. Its transcript stays on disk;
-read it only when something needs checking.
+Run an agentic subagent against any OpenAI-compatible endpoint. The
+delegate runs its own tool-calling loop — reading files, globbing, grepping,
+and editing files — and returns a small JSON envelope. Its transcript stays on
+disk; read it only when something needs checking.
 
-**What ships today:** the read-only loop above, config-driven providers and
-tiers, and these four tools:
+**What ships today:** the agentic loop above, config-driven providers and
+tiers, and these six tools:
 
 - `read_file` — read a text file with line numbers, paged by offset/limit.
 - `glob` — find files by shell glob pattern.
 - `grep` — search file contents by regex, returning `path:lineno:text`.
 - `list_dir` — list files under a directory, recursively.
+- `edit_file` — replace an exact substring in a file already read.
+- `write_file` — create a new file or overwrite one already read.
 
-**What doesn't:** editing, bash, MCP tools, worktree isolation, batch
-scheduling, and the benchmark harness are all planned but not present — do
-not tell a delegate to edit a file or run a command, and don't configure a
-profile expecting one to.
+**What doesn't:** bash, MCP tools, batch scheduling, and the benchmark harness
+are all planned but not present — do not tell a delegate to run a command, and
+don't configure a profile expecting one to.
 
 ## When delegation actually pays
 
@@ -72,26 +73,45 @@ Real options (`subagents run --help` prints the same list):
 - `--deadline-secs <n>` — wall-clock budget (see below).
 - `--verbose` — per-turn progress to stderr.
 
+## Write profiles
+
+A profile with `edit_file`/`write_file` runs in a **git worktree detached at
+HEAD**. Three consequences you must plan around:
+
+- **The delegate sees your last commit, not your working tree.** Commit or
+  stash before delegating an edit, or the delegate edits stale code.
+- **The edit lands in the worktree**, whose path the envelope reports as
+  `worktree`. Inspect `git -C <worktree> diff HEAD` (everything is staged),
+  then apply what you accept — e.g. `git -C <worktree> diff HEAD | git apply`.
+  Nothing touches your tree until you do this.
+- **Budget for the test gate.** `test_cmd` runs after the loop, inside the
+  worktree, up to `test_timeout_ms` (default 120s). Your shell timeout must
+  cover `--deadline-secs` *plus* the gate.
+
+Exit 0 now means the loop completed **and** the gate (if configured) passed.
+A failed gate exits 2 with `test.passed: false` — the worktree is kept, so a
+failed-but-close diff is still yours to salvage or discard.
+
 ## Exit codes
 
-- **`0`** — completed: `status: "ok"`.
-- **`2`** — ran, but status is not `"ok"` (`max_turns`, `budget`, `deadline`, or
-  `error`). An envelope is still on stdout — read it before treating this as
-  failure.
-- **`1`** — never started. Nothing on stdout; the error is on stderr.
+- **`0`** — completed: status "ok" and the test gate (if configured) passed.
+- **`2`** — ran, but status is not "ok" or the test gate failed — an envelope is
+  still on stdout; read it before treating this as failure.
+- **`1`** — never started — nothing on stdout, the error is on stderr.
 
 ## Reading the envelope
 
 ```json
 { "status": "ok", "summary": "...", "turns": 4, "wall_secs": 12.0,
+  "files_changed": ["src/rate-limit.ts"], "diffstat": "1 file changed, 1 insertion(+), 1 deletion(-)", "test": {"ran": true, "passed": true, "cmd": "bun test"}, "worktree": "/tmp/subagents-wt-…",
   "context": {"peak_prompt_tokens": 21628, "limit": null, "pressure": null},
   "truncations": 0, "local_tokens": 21628, "transcript": "..." }
 ```
 
 `status` is one of `ok`, `max_turns`, `budget`, `deadline`, `error` — there is
-no `"stopped"`, and there is no `tools_omitted`, `files_changed`, or `test`
-field (nothing writes or runs commands yet). Check these before trusting
-`summary`:
+no `"stopped"`. Write runs include `files_changed`, `diffstat`, `test`, and
+`worktree`; read-only runs don't. `tools_omitted` doesn't exist yet (the MCP
+client hasn't landed). Check these before trusting `summary`:
 
 - **`truncations` > 0** — the delegate was working blind on part of its input.
   Its coverage claims are unsafe. Re-run narrower, or escalate a tier.
@@ -104,6 +124,9 @@ field (nothing writes or runs commands yet). Check these before trusting
 - **`status: "deadline"` / `"max_turns"` / `"budget"`** — a partial result, not
   a failure. `summary` falls back to `detail` when the run stopped before
   producing prose (e.g. mid-tool-call), so it's never blank on a real stop.
+- **`test.passed: false`** — the delegate's diff breaks the configured test
+  command. The worktree is kept; read the transcript's `test_output` before
+  deciding whether to salvage or discard.
 
 ## Trust rules
 
@@ -119,6 +142,9 @@ The delegate is reliable about specifics and unreliable about scope.
   of 6. Count the list yourself.
 - **Small models mangle incidentals.** A 4.6B model got every line number right
   while garbling route path formatting. Trust the anchor, re-derive the detail.
+- **Never apply a diff you haven't read.** The envelope's `files_changed` says
+  where the delegate edited, not that the edits are right. Read the worktree
+  diff; the test gate narrows the risk but a passing gate is not review.
 
 ## Tiering
 
