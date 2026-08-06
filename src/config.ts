@@ -4,6 +4,8 @@ import { hasWriteTools } from "./tools/registry";
 export interface ProviderConfig {
   base_url: string;
   kind?: "openai" | "lmstudio";
+  /** Measured concurrency ceiling for this host. Default 2 — conservative. */
+  max_in_flight?: number;
 }
 export interface TierConfig {
   provider: string;
@@ -44,6 +46,9 @@ export interface ResolvedRun {
   worktree: boolean;
   testCmd?: string;
   testTimeoutMs: number;
+  /** The tier's provider name — batch groups jobs by (provider, model). */
+  provider: string;
+  maxInFlight: number;
 }
 
 export const DEFAULTS = {
@@ -101,6 +106,14 @@ export function resolveProfile(
     );
   }
 
+  const maxInFlight = provider.max_in_flight ?? 2;
+  if (!Number.isInteger(maxInFlight) || maxInFlight <= 0) {
+    throw new Error(
+      `provider '${tier.provider}': max_in_flight must be a positive integer, ` +
+        `got ${JSON.stringify(provider.max_in_flight)}`,
+    );
+  }
+
   let sampling: SamplingParams = {};
   if (tier.sampling !== undefined) {
     const preset = cfg.sampling?.[tier.sampling];
@@ -135,5 +148,7 @@ export function resolveProfile(
     worktree,
     ...(profile.test_cmd !== undefined ? { testCmd: profile.test_cmd } : {}),
     testTimeoutMs: d.test_timeout_ms ?? DEFAULTS.testTimeoutMs,
+    provider: tier.provider,
+    maxInFlight,
   };
 }

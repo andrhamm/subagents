@@ -119,3 +119,27 @@ describe("parseConfig section shapes", () => {
       .toThrow(/invalid section 'providers'/);
   });
 });
+
+describe("provider concurrency", () => {
+  it("resolves max_in_flight with a conservative default of 2", () => {
+    const r = resolveProfile(parseConfig(YAML_OK), "digest");
+    expect(r.maxInFlight).toBe(2);
+    expect(r.provider).toBe("local");
+  });
+
+  it("honours a measured max_in_flight", () => {
+    const yaml = YAML_OK.replace(
+      'local: { base_url: "http://127.0.0.1:1234/v1", kind: lmstudio }',
+      'local: { base_url: "http://127.0.0.1:1234/v1", kind: lmstudio, max_in_flight: 4 }',
+    );
+    expect(resolveProfile(parseConfig(yaml), "digest").maxInFlight).toBe(4);
+  });
+
+  it("rejects a non-positive or fractional max_in_flight", () => {
+    const yaml = YAML_OK.replace(
+      'local: { base_url: "http://127.0.0.1:1234/v1", kind: lmstudio }',
+      'local: { base_url: "http://127.0.0.1:1234/v1", kind: lmstudio, max_in_flight: 0 }',
+    );
+    expect(() => resolveProfile(parseConfig(yaml), "digest")).toThrow(/max_in_flight/);
+  });
+});
