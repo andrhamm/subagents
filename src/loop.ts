@@ -75,6 +75,11 @@ function safeOnTurn(o: LoopOptions, turn: number, elapsedMs: number, toolNames: 
  * - A missing/non-string tool name degrades to `""`, which `dispatch`
  *   already turns into a correctable `ERROR: unknown tool` message — the
  *   same path a real unknown tool name takes, not a special case.
+ * - `type: "function"` is set unconditionally. The wire's own value is
+ *   irrelevant (it can only ever be "function"), but its *absence* is not:
+ *   LM Studio validates the echoed assistant message and rejects a
+ *   tool_call without `type` as HTTP 400 "Invalid 'messages'" — found
+ *   against a live server; every scripted test fake accepted it.
  */
 function normalizeToolCall(raw: WireToolCall, turn: number, index: number): ToolCall {
   const id = typeof raw?.id === "string" && raw.id.length > 0
@@ -82,7 +87,7 @@ function normalizeToolCall(raw: WireToolCall, turn: number, index: number): Tool
     : `missing-id-turn${turn}-${index}`;
   const name = typeof raw?.function?.name === "string" ? raw.function.name : "";
   const args = typeof raw?.function?.arguments === "string" ? raw.function.arguments : "";
-  return { id, function: { name, arguments: args } };
+  return { id, type: "function", function: { name, arguments: args } };
 }
 
 export async function runLoop(o: LoopOptions): Promise<LoopResult> {

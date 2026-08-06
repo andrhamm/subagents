@@ -614,3 +614,25 @@ describe("runLoop session", () => {
     expect(seen[2]).toBe(seen[0]);
   });
 });
+
+describe("runLoop wire echo", () => {
+  // Found against a live LM Studio server: the scripted response's
+  // tool_calls omit `type` (as a real wire response may), and the loop's
+  // normalization used to echo them back without it — which the server
+  // rejects as HTTP 400 "Invalid 'messages'". Every canned test fake
+  // accepted the malformed echo; only the live server enforced the shape.
+  it("echoes every tool_call with type 'function', even when the wire omitted it", async () => {
+    const backend = new ScriptedBackend([
+      assistant(null, [["c1", "t", "{}"]]),
+      assistant("done"),
+    ]);
+    await runLoop({
+      ...base, backend,
+      tools: [fakeTool("t", { content: "x", truncated: false })],
+    });
+    const echoed = backend.seen[1]!.messages.find(
+      (m): m is Extract<Message, { role: "assistant" }> => m.role === "assistant",
+    );
+    expect(echoed?.tool_calls?.[0]?.type).toBe("function");
+  });
+});
