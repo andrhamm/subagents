@@ -113,6 +113,11 @@ describe("resolveTools", () => {
   it("does not resolve inherited Object.prototype properties as tools", () => {
     expect(() => resolveTools(["toString"])).toThrow(/unknown tool/);
   });
+
+  it("resolves the write tools by name", () => {
+    const names = resolveTools(["edit_file", "write_file"]).map((t) => t.name);
+    expect(names).toEqual(["edit_file", "write_file"]);
+  });
 });
 
 describe("runLoop termination", () => {

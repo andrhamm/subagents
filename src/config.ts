@@ -1,4 +1,5 @@
 import type { SamplingParams } from "./types";
+import { hasWriteTools } from "./tools/registry";
 
 export interface ProviderConfig {
   base_url: string;
@@ -12,11 +13,16 @@ export interface TierConfig {
 export interface ProfileConfig {
   tools: string[];
   tier: string;
+  /** Run in a detached git worktree. Defaults to true iff the profile has a write tool. */
+  worktree?: boolean;
+  /** Command the harness runs after the delegate changed files. */
+  test_cmd?: string;
 }
 export interface Defaults {
   max_turns?: number;
   max_tokens?: number;
   timeout_ms?: number;
+  test_timeout_ms?: number;
 }
 export interface Config {
   providers: Record<string, ProviderConfig>;
@@ -35,12 +41,16 @@ export interface ResolvedRun {
   maxTurns: number;
   maxTokens: number;
   timeoutMs: number;
+  worktree: boolean;
+  testCmd?: string;
+  testTimeoutMs: number;
 }
 
 export const DEFAULTS = {
   maxTurns: 20,
   maxTokens: 8000,
   timeoutMs: 300_000,
+  testTimeoutMs: 120_000,
 } as const;
 
 const REQUIRED_SECTIONS = ["providers", "tiers", "profiles"] as const;
@@ -53,8 +63,11 @@ export function parseConfig(text: string): Config {
   const cfg = raw as Config;
   for (const section of REQUIRED_SECTIONS) {
     const value = cfg[section] as unknown;
-    if (value === undefined || value === null || typeof value !== "object") {
-      throw new Error(`config: missing required section '${section}'`);
+    if (
+      value === undefined || value === null ||
+      typeof value !== "object" || Array.isArray(value)
+    ) {
+      throw new Error(`config: missing or invalid section '${section}' (must be a mapping)`);
     }
   }
   return cfg;
@@ -101,6 +114,15 @@ export function resolveProfile(
   }
 
   const d = cfg.defaults ?? {};
+  const writes = hasWriteTools(profile.tools);
+  const worktree = profile.worktree ?? writes;
+  if (writes && !worktree) {
+    throw new Error(
+      `profile '${profileName}' has write tools but 'worktree: false' — in-place ` +
+        "writes are not supported; drop the override or the write tools",
+    );
+  }
+
   return {
     baseUrl: provider.base_url.replace(/\/+$/, ""),
     kind: provider.kind ?? "openai",
@@ -110,5 +132,8 @@ export function resolveProfile(
     maxTurns: d.max_turns ?? DEFAULTS.maxTurns,
     maxTokens: d.max_tokens ?? DEFAULTS.maxTokens,
     timeoutMs: d.timeout_ms ?? DEFAULTS.timeoutMs,
+    worktree,
+    ...(profile.test_cmd !== undefined ? { testCmd: profile.test_cmd } : {}),
+    testTimeoutMs: d.test_timeout_ms ?? DEFAULTS.testTimeoutMs,
   };
 }

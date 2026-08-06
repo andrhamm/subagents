@@ -1,13 +1,24 @@
 import type { Tool } from "./types";
 import { readFile } from "./read";
 import { glob, grep, listDir } from "./search";
+import { editFile } from "./edit";
+import { writeFile } from "./write";
 
 export const ALL_TOOLS: Record<string, Tool> = {
   [readFile.name]: readFile,
   [glob.name]: glob,
   [grep.name]: grep,
   [listDir.name]: listDir,
+  [editFile.name]: editFile,
+  [writeFile.name]: writeFile,
 };
+
+/** Tools that modify the filesystem. Profiles carrying any of these get worktree isolation. */
+export const WRITE_TOOL_NAMES: ReadonlySet<string> = new Set([editFile.name, writeFile.name]);
+
+export function hasWriteTools(names: string[]): boolean {
+  return names.some((n) => WRITE_TOOL_NAMES.has(n));
+}
 
 /** Resolve an allowlist of tool names, failing loudly on a typo. */
 export function resolveTools(names: string[]): Tool[] {

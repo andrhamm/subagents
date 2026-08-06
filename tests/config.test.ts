@@ -66,3 +66,56 @@ describe("resolveProfile", () => {
       .toThrow(/ghost/);
   });
 });
+
+const YAML_WRITES = `
+providers:
+  local: { base_url: "http://127.0.0.1:1234/v1" }
+tiers:
+  cheap: { provider: local, model: "m" }
+profiles:
+  digest:  { tools: [read_file, glob, grep], tier: cheap }
+  fix:     { tools: [read_file, edit_file, write_file], tier: cheap, test_cmd: "bun test" }
+  scratch: { tools: [read_file, write_file], tier: cheap, worktree: false }
+  boxed:   { tools: [read_file], tier: cheap, worktree: true }
+defaults:
+  test_timeout_ms: 5000
+`;
+
+describe("write profiles", () => {
+  it("defaults worktree off for a read-only profile", () => {
+    const r = resolveProfile(parseConfig(YAML_WRITES), "digest");
+    expect(r.worktree).toBe(false);
+    expect(r.testCmd).toBeUndefined();
+  });
+
+  it("defaults worktree on when the profile has a write tool", () => {
+    const r = resolveProfile(parseConfig(YAML_WRITES), "fix");
+    expect(r.worktree).toBe(true);
+    expect(r.testCmd).toBe("bun test");
+  });
+
+  it("rejects write tools with worktree explicitly off — in-place writes are not shipped", () => {
+    expect(() => resolveProfile(parseConfig(YAML_WRITES), "scratch"))
+      .toThrow(/worktree/);
+  });
+
+  it("allows an explicit worktree on a read-only profile", () => {
+    expect(resolveProfile(parseConfig(YAML_WRITES), "boxed").worktree).toBe(true);
+  });
+
+  it("resolves test_timeout_ms from defaults, with a built-in fallback", () => {
+    expect(resolveProfile(parseConfig(YAML_WRITES), "fix").testTimeoutMs).toBe(5000);
+    expect(resolveProfile(parseConfig(YAML_OK), "digest").testTimeoutMs)
+      .toBe(DEFAULTS.testTimeoutMs);
+  });
+});
+
+describe("parseConfig section shapes", () => {
+  // typeof [] === "object", so the original gate accepted `providers: []`
+  // and failed later with a vaguer "unknown provider" — the ledger's oldest
+  // open finding.
+  it("rejects a required section that is an array rather than a mapping", () => {
+    expect(() => parseConfig("providers: []\ntiers: {}\nprofiles: {}\n"))
+      .toThrow(/invalid section 'providers'/);
+  });
+});
