@@ -77,6 +77,35 @@ Two findings worth more than the scores:
 **This is a two-model, one-task sample.** It is enough to show the cheap tier is
 viable and not enough to rank models. Contribute measurements if you have them.
 
+### Six models, read and write loops (2026-08-06)
+
+A later bench ran six tool-capable models over two tasks against a planted
+fixture: a read task (cite every validating route; ground truth 3 lines) and a
+**write task** (fix a one-line typo via `edit_file` in a worktree, gated by a
+`test_cmd`). Full table and method in the repo's `docs/bench/2026-08-06-lan-host.md`.
+
+| Model | Read recall | Write gate | Read wall | Write wall |
+|---|---|---|---|---|
+| `gemma-4-e2b` (4.6B) | 3/3 exact | PASS | 7.2s | 3.0s |
+| `gemma-4-e4b` | 3/3 exact | PASS | 15.3s | 7.3s |
+| `nemotron-3-nano-4b` | 3/3 exact | PASS¹ | 21.3s | 17.3s |
+| `gpt-oss-20b` | 3/3 exact | PASS | 10.4s | 4.2s |
+| `qwen3.6-27b` | 3/3 exact | PASS | 44.2s | 34.1s |
+| `qwen3-coder-next` | 3/3 exact | PASS | 55.0s | 6.0s |
+
+¹ After one transient engine-side `HTTP 400` retried clean.
+
+What it changes about model picks:
+
+- **Every model held the write loop** — read → exact-match edit → gate pass,
+  caller's tree untouched. Single-file mechanical edits are cheap-tier work.
+- **Dense mid-size models are the wrong shape on Apple Silicon.** The dense
+  27B took 4–6× the wall of its MoE peers at zero accuracy gain on these
+  tasks. `gpt-oss-20b` (MXFP4 MoE) was the best big-model value: fastest
+  non-gemma, lowest token burn.
+- **Big-model wall time is generation-bound, not load-bound.** Warm reruns
+  matched cold ones within ~20% — budget for output length, not JIT load.
+
 ### Constrained JSON extraction — a larger benchmark that does *not* transfer
 
 A separate effort measured 17 models on schema-constrained JSON extraction
@@ -206,6 +235,16 @@ sides hit the same host. Confirm with `lms ps` which device answered.
 **Check reachability with TCP, not ping.** ICMP is often dropped by firewall policy
 while the API port stays open, so `ping` can report total loss for a machine that is
 serving normally.
+
+**LM Studio silently serves unknown model ids with whatever is loaded.** A tier
+pointing at a nonexistent model id returned clean answers from the resident model —
+no error anywhere in the stack. A typo'd model name benchmarks the wrong model.
+Until the capability-probe adapter lands, verify the id against
+`/api/v0/models` before trusting any measurement.
+
+**Bun's `fetch` does not resolve bare LAN hostnames that `curl` does.** `curl` picks
+up the resolver's search domain (`myhost` → `myhost.localdomain`); Bun's fetch
+reports "Unable to connect" for the same name. Use an IP or FQDN in `base_url`.
 
 **Persist every raw response before parsing it.** Scoring and parsing bugs are
 common, and having the payloads on disk turns a re-run into a re-score. In one

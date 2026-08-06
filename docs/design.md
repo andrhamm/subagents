@@ -379,8 +379,10 @@ execution — the harness should say so rather than accept a budget it cannot ho
 
 ## Open questions
 
-1. Does a small model hold a **write** loop on real code? Only evidence is a
-   17-line fixture with a planted bug.
+1. Does a small model hold a **write** loop on real code? *Answered for the
+   single-file case:* six models from 4.6B to 80B completed read → exact-match
+   edit → gate-pass loops with zero caller-tree contamination
+   ([bench](bench/2026-08-06-lan-host.md)). Still open for multi-file edits.
 2. Where does context pressure actually bite on multi-file work at 128k+?
 3. Is a repo map worth building, or do numbered paged reads plus grep suffice?
 4. Should the orchestrator-side skill auto-route by task shape, or always be

@@ -21,7 +21,11 @@ the entire agentic loop against a configured model, reads and writes files itsel
 transcript lands on disk and is read only when something fails.
 
 Measured on a repo-wide triage during design: **165,362 tokens burned on the
-delegate, ~850 returned to the caller** — about 195:1.
+delegate, ~850 returned to the caller** — about 195:1. On the write side, a
+delegated one-line fix burns ~2,600–3,500 delegate tokens and returns a
+~600-character envelope carrying the diffstat and the test-gate verdict —
+measured across six models from 4.6B up
+([bench](docs/bench/2026-08-06-lan-host.md)).
 
 ## What ships today
 

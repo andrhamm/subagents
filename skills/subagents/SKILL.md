@@ -158,8 +158,11 @@ Mirror the cheap-sweep-then-escalate pattern:
    `--tier <name>`.
 
 Measured on one enumeration task: 4.6B scored 5/6 in 13.4s; 80B scored 6/6 in
-34.2s. Re-running 20% of a corpus on the strong model costs far less than running
-all of it there.
+34.2s. A later six-model bench (4.6B–80B) scored 3/3 with exact citations on
+every model, and **every model held a single-file write loop** with the test
+gate passing — cheap-first applies to write jobs too, with `--escalate-tier`
+as the safety net. Re-running 20% of a corpus on the strong model costs far
+less than running all of it there.
 
 ## Batch: many jobs, one envelope
 
