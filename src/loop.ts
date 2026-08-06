@@ -2,7 +2,7 @@ import type {
   AssistantMessage, Backend, ChatResponse, Message, SamplingParams, ToolCall, Usage,
   WireToolCall,
 } from "./types";
-import type { Tool } from "./tools/types";
+import { newSession, type RunSession, type Tool } from "./tools/types";
 import { markIfCut } from "./text";
 
 export type LoopStatus = "ok" | "max_turns" | "budget" | "deadline" | "error";
@@ -82,6 +82,7 @@ function normalizeToolCall(raw: WireToolCall, turn: number, index: number): Tool
 
 export async function runLoop(o: LoopOptions): Promise<LoopResult> {
   const byName = new Map(o.tools.map((t) => [t.name, t]));
+  const session = newSession();
   const schemas = o.tools.map((t) => t.schema);
   const messages: Message[] = [
     { role: "system", content: o.systemPrompt ?? DEFAULT_SYSTEM_PROMPT },
@@ -231,7 +232,7 @@ export async function runLoop(o: LoopOptions): Promise<LoopResult> {
         role: "tool",
         tool_call_id: call.id,
         content: await dispatch(call.function.name, call.function.arguments, byName, o,
-          () => { truncations++; }),
+          session, () => { truncations++; }),
       });
     }
 
@@ -253,6 +254,7 @@ async function dispatch(
   rawArgs: string,
   byName: Map<string, Tool>,
   o: LoopOptions,
+  session: RunSession,
   onTruncated: () => void,
 ): Promise<string> {
   const tool = byName.get(name);
@@ -268,7 +270,7 @@ async function dispatch(
     }). Retry this call with valid JSON.`;
   }
   try {
-    const result = await tool.run(args, { root: o.root });
+    const result = await tool.run(args, { root: o.root, session });
     if (result.truncated) onTruncated();
     return result.content;
   } catch (e) {

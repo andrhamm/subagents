@@ -582,3 +582,30 @@ describe("runLoop protocol conformance", () => {
     expect(backend.seen).toHaveLength(3);
   });
 });
+
+describe("runLoop session", () => {
+  it("supplies one shared session to every tool call in a run", async () => {
+    const seen: unknown[] = [];
+    const tool: Tool = {
+      name: "t",
+      schema: {
+        type: "function",
+        function: { name: "t", description: "d", parameters: { type: "object", properties: {} } },
+      },
+      async run(_args, ctx) {
+        seen.push(ctx.session);
+        return { content: "x", truncated: false };
+      },
+    };
+    const backend = new ScriptedBackend([
+      assistant(null, [["c1", "t", "{}"], ["c2", "t", "{}"]]),
+      assistant(null, [["c3", "t", "{}"]]),
+      assistant("done"),
+    ]);
+    await runLoop({ ...base, backend, tools: [tool] });
+    expect(seen).toHaveLength(3);
+    expect(seen[0]).toBeDefined();
+    expect(seen[1]).toBe(seen[0]);
+    expect(seen[2]).toBe(seen[0]);
+  });
+});

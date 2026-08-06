@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { safePath } from "../../src/tools/paths";
 import { readFile } from "../../src/tools/read";
+import { newSession } from "../../src/tools/types";
 
 // safePath realpaths its root, and on macOS mkdtemp gives /var/... while
 // realpath gives /private/var/... — compare against the resolved form.
@@ -139,5 +140,26 @@ describe("read_file", () => {
   it("throws on a fractional limit", async () => {
     await expect(readFile.run({ path: "src/big.ts", limit: 2.5 }, { root }))
       .rejects.toThrow(/limit/i);
+  });
+});
+
+describe("read_file session recording", () => {
+  it("records a successful read into the session, keyed by realpath", async () => {
+    const session = newSession();
+    await readFile.run({ path: "src/small.ts" }, { root, session });
+    expect(session.reads.has(join(realRoot, "src", "small.ts"))).toBe(true);
+  });
+
+  it("does not record a failed read", async () => {
+    const session = newSession();
+    await expect(
+      readFile.run({ path: "src/missing.ts" }, { root, session }),
+    ).rejects.toThrow();
+    expect(session.reads.size).toBe(0);
+  });
+
+  it("runs without a session at all — read-only callers need no ceremony", async () => {
+    const r = await readFile.run({ path: "src/small.ts" }, { root });
+    expect(r.truncated).toBe(false);
   });
 });

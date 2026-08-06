@@ -60,6 +60,10 @@ export const readFile: Tool = {
       );
     }
 
+    // Only a read that actually returned content counts for the
+    // read-before-write rule — a validation error above never reaches here.
+    ctx.session?.reads.add(path);
+
     const window = lines.slice(start - 1, start - 1 + limit);
     const body = window
       .map((line, i) => `${String(start + i).padStart(6)}\t${line}`)
