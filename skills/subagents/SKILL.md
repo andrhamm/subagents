@@ -21,9 +21,9 @@ tiers, and these six tools:
 - `edit_file` — replace an exact substring in a file already read.
 - `write_file` — create a new file or overwrite one already read.
 
-**What doesn't:** bash, MCP tools, batch scheduling, and the benchmark harness
-are all planned but not present — do not tell a delegate to run a command, and
-don't configure a profile expecting one to.
+**What doesn't:** bash, MCP tools, and the benchmark harness are all planned
+but not present — do not tell a delegate to run a command, and don't
+configure a profile expecting one to.
 
 ## When delegation actually pays
 
