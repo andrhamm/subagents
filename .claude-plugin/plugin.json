@@ -1,7 +1,7 @@
 {
   "name": "subagents",
   "version": "0.1.0",
-  "description": "Delegate scoped coding tasks to any OpenAI-compatible model, for a fixed small context cost",
+  "description": "Delegate scoped, read-only code investigation to any OpenAI-compatible model, for a fixed small context cost",
   "author": {
     "name": "Andrew Hammond"
   },
