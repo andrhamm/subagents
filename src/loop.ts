@@ -48,6 +48,11 @@ export const DEFAULT_SYSTEM_PROMPT =
   "List what you found; never state totals or counts.\n" +
   "When you have the answer, state it directly; do not call another tool.";
 
+// Appended only when the profile has write tools — read-only runs must not
+// pay for it every turn (prompt economy).
+export const WRITE_SYSTEM_PROMPT_SUFFIX =
+  "\nread_file a file before editing it. Make the smallest change that satisfies the task.";
+
 /** A broken progress callback (e.g. EPIPE from a closed pipe) must not cost the caller its result. */
 function safeOnTurn(o: LoopOptions, turn: number, elapsedMs: number, toolNames: string[]): void {
   try {
