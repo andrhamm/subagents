@@ -25,6 +25,9 @@ Options:
   --deadline-secs <n>  Wall-clock budget. Set it below your shell tool's timeout:
                        the loop then stops early with status "deadline" and a
                        valid envelope, instead of being killed with no output.
+                       Covers the test gate too: a write profile's test_cmd
+                       gets whatever's left of the deadline, clamped below
+                       test_timeout_ms.
   --verbose            Print per-turn progress to stderr.
 
 Batch options:

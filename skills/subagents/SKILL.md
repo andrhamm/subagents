@@ -1,6 +1,6 @@
 ---
 name: subagents
-description: Use when delegating a scoped, read-only investigation to a local or self-hosted model instead of doing it yourself — bulk triage across many files, digesting large logs or diffs, enumerating patterns repo-wide, delegated small edits with a test gate. Triggers on delegate, subagent, local model, LM Studio, Ollama, offload, cheap pass, bulk audit, save tokens, save context. Load before invoking the subagents CLI.
+description: Use when delegating a scoped investigation or a worktree-confined edit to a local or self-hosted model instead of doing it yourself — bulk triage across many files, digesting large logs or diffs, enumerating patterns repo-wide, delegated small edits with a test gate. Triggers on delegate, subagent, local model, LM Studio, Ollama, offload, cheap pass, bulk audit, save tokens, save context. Load before invoking the subagents CLI.
 user-invocable: true
 ---
 
@@ -45,8 +45,10 @@ Rules of thumb:
 - **Delegate**: work spanning many files, large logs or diffs, repo-wide
   enumeration, anything you'd otherwise read thousands of lines to answer.
 - **Don't delegate**: single small files, anything needing judgement about
-  product intent, anything where you cannot check the result cheaply, or
-  anything that requires writing — there is no write tool yet.
+  product intent, or anything where you cannot check the result cheaply —
+  writing is delegable via a write profile (see below), but only when you
+  can read the diff and, ideally, gate it with `test_cmd`. Applying a diff
+  you haven't read is the failure mode, not delegating the edit itself.
 - **Latency is worse, not better.** A delegated triage took 107s where you'd
   take under a minute. The win is context and cost, never speed.
 
@@ -59,9 +61,9 @@ subagents run --profile <name> --task "<task>" --root <repo>
 Real options (`subagents run --help` prints the same list):
 
 - `--profile <name>` — required. Selects a profile from config, which sets the
-  tool allowlist and a default tier. There is no worktree or test-command
-  setting on a profile — writes aren't implemented, so there's nothing yet to
-  isolate or gate.
+  tool allowlist and a default tier. A profile also carries `worktree`
+  (defaults to true when the profile has a write tool) and `test_cmd` — see
+  [Write profiles](#write-profiles) below.
 - `--task <text>` — required. What the delegate should do.
 - `--root <dir>` — repo root the delegate is confined to (default: cwd).
 - `--tier <name>` — override the profile's default tier.

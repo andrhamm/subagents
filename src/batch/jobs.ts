@@ -19,6 +19,14 @@ export interface ResolvedJob {
   root: string;
 }
 
+/**
+ * Job ids flow unescaped into `join(transcriptDir, \`${id}.json\`)` — a
+ * permissive id (a path separator, ".." ) would let a job write its
+ * transcript outside transcriptDir. Restricting to this set closes that off
+ * at parse time, before any job runs.
+ */
+const VALID_ID = /^[A-Za-z0-9._-]+$/;
+
 export function parseJobs(text: string): JobSpec[] {
   const raw = Bun.YAML.parse(text) as unknown;
   const jobs = raw !== null && typeof raw === "object" && !Array.isArray(raw)
@@ -40,6 +48,9 @@ export function parseJobs(text: string): JobSpec[] {
       throw new Error(`jobs[${i}]: missing 'task'`);
     }
     const id = job["id"] === undefined ? `j${i + 1}` : String(job["id"]);
+    if (!VALID_ID.test(id)) {
+      throw new Error(`jobs[${i}]: id must match ${VALID_ID} — got '${id}'`);
+    }
     if (seen.has(id)) throw new Error(`jobs: duplicate id '${id}'`);
     seen.add(id);
     return {

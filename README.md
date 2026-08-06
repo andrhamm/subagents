@@ -16,8 +16,8 @@ frontier rates. A local or self-hosted model can absorb that input for free.
 
 The naive workaround — piping a local model's output back through the orchestrator
 — costs *more* context than doing the work directly. So instead: a CLI that runs
-the entire agentic loop against a configured model, reads files itself (write
-support is planned, see below), and returns a small JSON envelope. The
+the entire agentic loop against a configured model, reads and writes files itself
+(writes confined to a worktree, see below), and returns a small JSON envelope. The
 transcript lands on disk and is read only when something fails.
 
 Measured on a repo-wide triage during design: **165,362 tokens burned on the

@@ -3,12 +3,15 @@ import type { JobResult } from "./scheduler";
 
 /**
  * A job worth a second, stronger attempt: it failed outright, stopped
- * early, or completed while working blind (truncations > 0 — its coverage
- * claims are unsafe, per the skill's trust rules).
+ * early, completed while working blind (truncations > 0 — its coverage
+ * claims are unsafe, per the skill's trust rules), or completed but left a
+ * broken test gate behind — a status "ok" envelope doesn't mean the edit
+ * is usable when the caller configured a gate to check exactly that.
  */
 export function needsEscalation(r: JobResult): boolean {
   if (r.error !== undefined || r.envelope === null) return true;
-  return r.envelope.status !== "ok" || r.envelope.truncations > 0;
+  return r.envelope.status !== "ok" || r.envelope.truncations > 0 ||
+    r.envelope.test?.passed === false;
 }
 
 export interface Attempt {

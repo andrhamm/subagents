@@ -5,6 +5,67 @@ import { join } from "node:path";
 
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
 
+// Self-contained git fixture, same shape as tests/cli-write.test.ts — each
+// test file stands alone by suite convention.
+async function sh(cwd: string, ...cmd: string[]): Promise<void> {
+  const proc = Bun.spawn(cmd, { cwd, stdout: "pipe", stderr: "pipe" });
+  if ((await proc.exited) !== 0) {
+    throw new Error(`${cmd.join(" ")} failed: ${await new Response(proc.stderr).text()}`);
+  }
+}
+
+async function initGitRepo(): Promise<string> {
+  const dir = mkdtempSync(join(tmpdir(), "subagents-batchw-"));
+  await sh(dir, "git", "init", "-q");
+  await sh(dir, "git", "config", "user.email", "test@example.com");
+  await sh(dir, "git", "config", "user.name", "test");
+  // This machine's global config uses SSH signing, which would hang fixture
+  // commits — sanctioned deviation, same as tests/worktree.test.ts.
+  await sh(dir, "git", "config", "commit.gpgsign", "false");
+  writeFileSync(join(dir, "a.ts"), "const a = 1;\n");
+  await sh(dir, "git", "add", "-A");
+  await sh(dir, "git", "commit", "-qm", "init");
+  return dir;
+}
+
+/** One scripted fake model per test; replays `script`. */
+function serveScript(script: object[]): { url: string; stop(): void } {
+  let i = 0;
+  const server = Bun.serve({
+    port: 0,
+    fetch: async (req) => {
+      await req.json();
+      const next = script[Math.min(i, script.length - 1)];
+      i++;
+      return Response.json(next);
+    },
+  });
+  return { url: `http://127.0.0.1:${server.port}/v1`, stop: () => server.stop(true) };
+}
+
+const call = (id: string, name: string, args: object) => ({
+  choices: [{
+    message: {
+      role: "assistant", content: null,
+      tool_calls: [{ id, function: { name, arguments: JSON.stringify(args) } }],
+    },
+    finish_reason: "tool_calls",
+  }],
+  usage: { prompt_tokens: 100, completion_tokens: 10 },
+});
+
+const answerMsg = (text: string) => ({
+  choices: [{ message: { role: "assistant", content: text }, finish_reason: "stop" }],
+  usage: { prompt_tokens: 100, completion_tokens: 10 },
+});
+
+/** Read a.ts, edit it, answer — the canonical write-profile script. */
+const EDIT_SCRIPT = [
+  call("c1", "read_file", { path: "a.ts" }),
+  call("c2", "edit_file", { path: "a.ts", old_string: "const a = 1;", new_string: "const a = 2;" }),
+  answerMsg("changed a to 2"),
+];
+
 /** A fake model that always answers in prose (one clean ok turn). */
 function serveAnswer(text: string): { url: string; stop(): void } {
   const server = Bun.serve({
@@ -191,6 +252,44 @@ jobs:
     } finally {
       cheap.stop();
       strong.stop();
+    }
+  });
+
+  // Phase A (write profiles + test gate) x Phase B (batch rollup + escalation):
+  // a write job whose loop succeeds but whose gate fails must not roll up
+  // clean, and the batch must exit non-zero for it.
+  it("does not roll up clean when a write job's test gate fails", async () => {
+    const repo = await initGitRepo();
+    cleanups.push(repo);
+    const srv = serveScript(EDIT_SCRIPT);
+    try {
+      const config = join(repo, "subagents.yaml");
+      writeFileSync(config, `
+providers:
+  test: { base_url: "${srv.url}" }
+tiers:
+  cheap: { provider: test, model: "fake-model" }
+profiles:
+  fix: { tools: [read_file, edit_file], tier: cheap, test_cmd: "grep -q nope a.ts" }
+`);
+      const jobsFile = join(repo, "jobs.yaml");
+      writeFileSync(jobsFile, `
+jobs:
+  - { id: one, profile: fix, task: "fix a" }
+`);
+      const tdir = join(repo, "transcripts");
+      const { code, out } = await runBatch([
+        "--jobs", jobsFile, "--config", config, "--root", repo, "--transcript-dir", tdir,
+      ]);
+      expect(code).toBe(2);
+      const rollup = JSON.parse(out);
+      expect(rollup.status).not.toBe("ok");
+      const job = rollup.jobs.find((j: any) => j.id === "one");
+      expect(job.final.envelope.status).toBe("ok"); // the loop itself completed
+      expect(job.final.envelope.test.passed).toBe(false); // but the gate didn't
+      cleanups.push(job.final.envelope.worktree);
+    } finally {
+      srv.stop();
     }
   });
 });

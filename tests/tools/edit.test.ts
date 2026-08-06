@@ -110,6 +110,19 @@ describe("edit_file", () => {
     expect(editFile.schema.function.description).toContain("read_file");
   });
 
+  it("numbers the snippet correctly when old_string starts mid-line", async () => {
+    await read("src/a.ts");
+    // "= 2;" appears once in the fixture (a=1, b=2, c=3), mid-line inside
+    // "const b = 2;" — the case that over-counted by one line.
+    const r = await editFile.run(
+      { path: "src/a.ts", old_string: "= 2;", new_string: "= 20;" },
+      { root, session },
+    );
+    expect(r.content).toContain("2\tconst b = 20;");
+    expect(await Bun.file(join(root, "src", "a.ts")).text())
+      .toBe("const a = 1;\nconst b = 20;\nconst c = 3;\n");
+  });
+
   it("never shows a phantom line past end of file in the snippet", async () => {
     await read("src/a.ts");
     const r = await editFile.run(

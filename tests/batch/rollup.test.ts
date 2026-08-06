@@ -48,6 +48,18 @@ describe("buildRollup status", () => {
     expect(r.not_run).toEqual(["c"]);
   });
 
+  it("is partial, not ok, when a status-ok envelope's test gate failed", () => {
+    const failedGate = env({
+      test: { ran: true, passed: false, cmd: "bun test" },
+    });
+    const r = buildRollup({
+      ...base,
+      reports: [report("a", env()), report("b", failedGate)],
+      timings: [timing("a", 0, 1000), timing("b", 0, 1000, failedGate)],
+    });
+    expect(r.status).toBe("partial");
+  });
+
   it("is error when nothing finished ok", () => {
     const r = buildRollup({
       ...base,

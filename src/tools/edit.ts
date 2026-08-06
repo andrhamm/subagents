@@ -21,7 +21,13 @@ function countOccurrences(text: string, needle: string): number {
  * so the model can verify its edit landed without paying for a re-read.
  */
 function snippet(updated: string, changeIndex: number): string {
-  const firstChangedLine = toLines(updated.slice(0, changeIndex)).length + 1; // 1-based
+  // Prefix line count, not toLines(prefix).length + 1: toLines splits on "\n"
+  // and drops a trailing empty element, so when old_string starts mid-line
+  // (prefix doesn't end at a line break) the +1 double-counts the partial
+  // line already in progress. split("\n").length is the 1-based line number
+  // of the character at changeIndex in every case — start of file, a clean
+  // line boundary, or mid-line.
+  const firstChangedLine = updated.slice(0, changeIndex).split("\n").length;
   const lines = toLines(updated);
   const start = Math.max(1, firstChangedLine - SNIPPET_CONTEXT);
   const end = Math.min(lines.length, firstChangedLine + SNIPPET_CONTEXT);

@@ -43,6 +43,23 @@ describe("parseJobs", () => {
       "jobs:\n  - { id: a, profile: p, task: t }\n  - { id: a, profile: p, task: t }\n",
     )).toThrow(/duplicate id 'a'/);
   });
+
+  // Ids flow unescaped into join(transcriptDir, `${id}.json`) — a permissive
+  // id would let a job's transcript land outside transcriptDir.
+  it("rejects an id containing a path separator", () => {
+    expect(() => parseJobs("jobs:\n  - { id: \"a/b\", profile: p, task: t }\n"))
+      .toThrow(/jobs\[0\]: id must match/);
+  });
+
+  it("rejects an id that traverses out of the transcript dir", () => {
+    expect(() => parseJobs("jobs:\n  - { id: \"../evil\", profile: p, task: t }\n"))
+      .toThrow(/jobs\[0\]: id must match/);
+  });
+
+  it("rejects a non-scalar id instead of silently coercing it via String()", () => {
+    expect(() => parseJobs("jobs:\n  - { id: [1, 2], profile: p, task: t }\n"))
+      .toThrow(/jobs\[0\]: id must match/);
+  });
 });
 
 describe("resolveJobs", () => {

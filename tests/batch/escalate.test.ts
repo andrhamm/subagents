@@ -37,6 +37,12 @@ describe("needsEscalation", () => {
   it("escalates a job whose runner threw", () => {
     expect(needsEscalation(res("a", null, "connection refused"))).toBe(true);
   });
+
+  it("escalates an ok-status envelope whose test gate failed", () => {
+    expect(needsEscalation(res("a", env({
+      test: { ran: true, passed: false, cmd: "bun test" },
+    })))).toBe(true);
+  });
 });
 
 describe("mergeAttempts", () => {

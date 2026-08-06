@@ -49,7 +49,8 @@ export function buildRollup(o: {
   transcriptDir: string;
 }): Rollup {
   const clean = (r: JobReport): boolean =>
-    r.final.envelope !== null && r.final.envelope.status === "ok";
+    r.final.envelope !== null && r.final.envelope.status === "ok" &&
+    r.final.envelope.test?.passed !== false;
   const allClean = o.reports.every(clean) && o.notRun.length === 0;
   const noneClean = o.reports.length > 0 && !o.reports.some(clean);
   const status = allClean ? "ok" : noneClean ? "error" : "partial";

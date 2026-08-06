@@ -79,10 +79,20 @@ export async function executeRun(req: RunRequest): Promise<RunOutcome> {
           worktree: worktreeDir,
         };
         if (run.testCmd) {
-          const gate = await runTestGate(run.testCmd, worktreeDir, run.testTimeoutMs);
+          // The gate runs after the loop, so it draws from whatever's left of
+          // the caller's deadline, not a fresh budget of its own — a 120s
+          // default test_timeout_ms inside a 60s --deadline-secs would let
+          // the gate blow straight through the promise already made to the
+          // caller. Same principle as the per-request clamp in loop.ts; a 1s
+          // floor keeps a nearly-exhausted deadline from starving the gate
+          // outright.
+          const gateTimeoutMs = req.deadlineAt === undefined
+            ? run.testTimeoutMs
+            : Math.max(1000, Math.min(run.testTimeoutMs, req.deadlineAt - Date.now()));
+          const gate = await runTestGate(run.testCmd, worktreeDir, gateTimeoutMs);
           writeOutcome.test = { ran: true, passed: gate.passed, cmd: run.testCmd };
           testOutput = gate.timedOut
-            ? `[test gate timed out after ${run.testTimeoutMs}ms]\n${gate.output}`
+            ? `[test gate timed out after ${gateTimeoutMs}ms]\n${gate.output}`
             : gate.output;
         }
       }
