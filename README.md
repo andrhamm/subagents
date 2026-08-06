@@ -45,6 +45,11 @@ delegate, ~850 returned to the caller** — about 195:1.
 - A test gate: a write profile's `test_cmd` runs in the worktree after the loop;
   the envelope reports the verdict, and a failed gate keeps the worktree so the
   diff can still be inspected
+- `subagents batch`: N jobs from a YAML file, one rollup envelope. Jobs group
+  by (provider, model) so each model loads once; `max_in_flight` caps
+  per-provider fan-out; `--escalate-tier` re-runs failed or truncation-blind
+  jobs on a stronger tier; `--progress` maintains a pollable state file; a
+  batch deadline stops *starting* jobs and names the ones that never ran
 
 ## What's planned, not built
 
@@ -53,7 +58,6 @@ delegate, ~850 returned to the caller** — about 195:1.
 - An MCP client for external tools
 - The LM Studio adapter (capability probe, `context.limit`/`context.pressure`
   — both are `null` today because nothing populates them yet)
-- Batch scheduling across multiple jobs and models
 - The agentic-loop benchmark harness
 
 ## Which model should I run?

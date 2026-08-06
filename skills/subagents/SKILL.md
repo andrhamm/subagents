@@ -159,6 +159,31 @@ Measured on one enumeration task: 4.6B scored 5/6 in 13.4s; 80B scored 6/6 in
 34.2s. Re-running 20% of a corpus on the strong model costs far less than running
 all of it there.
 
+## Batch: many jobs, one envelope
+
+Thirty envelopes dispatched one at a time cost ~25k tokens across thirty
+turns; one batch returns a single rollup. Delegate in batch whenever you have
+more than a handful of jobs:
+
+```bash
+subagents batch --jobs jobs.yaml --escalate-tier strong \
+  --deadline-secs 280 --progress /tmp/batch-progress.json
+```
+
+- Jobs group by (provider, model) — each model loads exactly once. Order in
+  the file doesn't matter; grouping is the scheduler's job, not yours.
+- `--escalate-tier` runs the sweep-then-escalate recipe inside one call:
+  jobs that failed, stopped early, or worked blind (`truncations > 0`)
+  re-run once on the named tier, and each job's report carries both attempts.
+- The batch deadline stops *starting* jobs. `not_run` in the rollup names
+  what never started — those jobs need a re-run, not an apology.
+- For batches that outlive your shell timeout, run in the background and
+  poll `--progress`: `{total, done, running, pending, not_run}`, one JSON line.
+- Read `concurrency` before tuning: a widening p50→max latency spread with
+  flat throughput is queueing, not parallelism — lower `max_in_flight`.
+  Rising `queue_wait` says the same. And a ceiling measured on a shared host
+  goes stale the moment someone else loads a model on it.
+
 ## Always pass a deadline
 
 You are invoking this through a shell tool with a hard wall-clock limit. If the CLI is

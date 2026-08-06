@@ -4,13 +4,15 @@ Delegate scoped coding tasks to any OpenAI-compatible model, so an orchestrating
 agent (Claude Code, or anything else) pays a small fixed context cost instead of
 reading everything itself.
 
-Status: the read-only loop, write tools, worktree isolation, and test gate below
-ship and are verified against a live model — config, the agentic loop, all six
-tools (four read-only, two write), the deadline gate, worktree lifecycle, test
-execution, and the envelope. The LM Studio adapter, the MCP client, batch
-scheduling, and the benchmark harness are designed here but not built. `src/`
-is authoritative over this document wherever they disagree. Not pushed
-anywhere yet.
+Status: the read-only loop, write tools, worktree isolation, test gate, and
+batch scheduling below ship and are verified against a live model — config,
+the agentic loop, all six tools (four read-only, two write), the deadline
+gate, worktree lifecycle, test execution, the envelope, and batch (model
+grouping, concurrency evidence, the progress file, the batch deadline, and
+escalation). The **Batch scheduling** section below describes shipped
+behavior, not a plan. The MCP client, the LM Studio adapter, `bash`, and the
+benchmark harness are designed here but not built. `src/` is authoritative
+over this document wherever they disagree. Not pushed anywhere yet.
 
 ## The problem
 
