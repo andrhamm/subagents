@@ -1,5 +1,6 @@
 import type { Tool, ToolContext, ToolResult } from "./types";
 import { safePath } from "./paths";
+import { toLines } from "./read";
 
 /** Lines of context shown around the first change in the confirmation snippet. */
 const SNIPPET_CONTEXT = 3;
@@ -20,8 +21,8 @@ function countOccurrences(text: string, needle: string): number {
  * so the model can verify its edit landed without paying for a re-read.
  */
 function snippet(updated: string, changeIndex: number): string {
-  const firstChangedLine = updated.slice(0, changeIndex).split("\n").length; // 1-based
-  const lines = updated.split("\n");
+  const firstChangedLine = toLines(updated.slice(0, changeIndex)).length + 1; // 1-based
+  const lines = toLines(updated);
   const start = Math.max(1, firstChangedLine - SNIPPET_CONTEXT);
   const end = Math.min(lines.length, firstChangedLine + SNIPPET_CONTEXT);
   return lines

@@ -4,7 +4,7 @@ import { safePath } from "./paths";
 export const MAX_READ_LINES = 2000;
 
 /** Split into lines without inventing a final empty line for a trailing newline. */
-function toLines(text: string): string[] {
+export function toLines(text: string): string[] {
   const lines = text.split("\n");
   if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
   return lines;

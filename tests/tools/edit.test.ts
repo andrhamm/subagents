@@ -109,4 +109,15 @@ describe("edit_file", () => {
     expect(Object.keys(props).sort()).toEqual(["new_string", "old_string", "path", "replace_all"]);
     expect(editFile.schema.function.description).toContain("read_file");
   });
+
+  it("never shows a phantom line past end of file in the snippet", async () => {
+    await read("src/a.ts");
+    const r = await editFile.run(
+      { path: "src/a.ts", old_string: "const c = 3;", new_string: "const c = 30;" },
+      { root, session },
+    );
+    // The file has exactly 3 lines; a trailing newline must not fabricate a "4".
+    expect(r.content).toContain("3\tconst c = 30;");
+    expect(r.content).not.toContain("4\t");
+  });
 });
