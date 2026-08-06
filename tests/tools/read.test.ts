@@ -126,4 +126,18 @@ describe("read_file", () => {
     expect(r.content).not.toContain("TRUNCATED");
     expect(r.truncated).toBe(false);
   });
+
+  // Second-round fix: `Number.isFinite && > 0` accepts a fraction. A
+  // fractional offset/limit produces fractional line citations from the one
+  // tool whose entire contract is exact line numbers, and a TRUNCATED marker
+  // telling the model to continue at a fractional offset next turn.
+  it("throws on a fractional offset instead of producing fractional line citations", async () => {
+    await expect(readFile.run({ path: "src/big.ts", offset: 1.5, limit: 3 }, { root }))
+      .rejects.toThrow(/offset/i);
+  });
+
+  it("throws on a fractional limit", async () => {
+    await expect(readFile.run({ path: "src/big.ts", limit: 2.5 }, { root }))
+      .rejects.toThrow(/limit/i);
+  });
 });

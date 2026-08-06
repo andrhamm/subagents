@@ -32,6 +32,44 @@ Exit codes:
   1  never started — nothing on stdout, the error is on stderr.
 `;
 
+/** Every option whose value is an arbitrary string, as opposed to a boolean flag. */
+const STRING_OPTS = new Set([
+  "profile", "task", "root", "tier", "config", "transcript", "deadline-secs",
+]);
+
+/**
+ * Fold each known string option and its very next token into one
+ * `--opt=value` token before handing argv to `parseArgs`.
+ *
+ * `parseArgs` runs in strict mode, which is what gives a typo'd flag (e.g.
+ * `--porfile`) a clear "unknown option" error instead of silently eating
+ * it — that's worth keeping. But strict mode also refuses to guess when a
+ * string option's value itself starts with `-` (e.g. `--task --help`),
+ * throwing "argument is ambiguous" instead of just taking it: argument
+ * *position* already answers the question parseArgs is asking, so answer
+ * it here rather than losing strict mode everywhere to fix one flag.
+ *
+ * Only touches a token that is exactly a known long option name with a
+ * following token and no `=` already — `--verbose` (boolean) and an
+ * option already given as `--x=y` pass through untouched, and a string
+ * option with truly nothing after it is left alone too, so parseArgs still
+ * reports "argument missing" for that case exactly as before.
+ */
+function normalizeArgv(argv: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const tok = argv[i]!;
+    const name = tok.startsWith("--") ? tok.slice(2) : undefined;
+    if (name && STRING_OPTS.has(name) && i + 1 < argv.length) {
+      out.push(`${tok}=${argv[i + 1]}`);
+      i++;
+    } else {
+      out.push(tok);
+    }
+  }
+  return out;
+}
+
 function findConfig(explicit?: string): string {
   if (explicit) {
     if (!existsSync(explicit)) throw new Error(`config not found: ${explicit}`);
@@ -66,17 +104,9 @@ async function main(argv: string[]): Promise<number> {
     process.stderr.write(`unknown command '${command}'\n\n${USAGE}`);
     return 1;
   }
-  // `parseArgs` below runs in strict mode, so an option it doesn't
-  // recognize (like --help itself) throws a raw error instead of the usual
-  // USAGE text. Handle it before parsing rather than special-casing the
-  // parser's own error message.
-  if (argv.includes("--help") || argv.includes("-h")) {
-    process.stdout.write(USAGE);
-    return 0;
-  }
 
   const { values } = parseArgs({
-    args: argv.slice(1),
+    args: normalizeArgv(argv.slice(1)),
     options: {
       profile: { type: "string" },
       task: { type: "string" },
@@ -86,9 +116,23 @@ async function main(argv: string[]): Promise<number> {
       transcript: { type: "string" },
       "deadline-secs": { type: "string" },
       verbose: { type: "boolean", default: false },
+      help: { type: "boolean", short: "h" },
     },
     allowPositionals: false,
   });
+
+  // Second-round fix: this used to be `argv.includes("--help")`, a
+  // substring scan over the *whole* argv — which also matched an option's
+  // own value (`--task "--help"`), silently printing usage and exiting 0 on
+  // a real run. Declaring `help` as a real `parseArgs` option and checking
+  // `values.help` (with `normalizeArgv` above resolving the ambiguity that
+  // would otherwise cause) makes argument position the parser's problem: a
+  // bare `--help`/`-h` token sets this flag, but `--task --help` assigns
+  // "--help" as `--task`'s string value and never reaches here as a flag.
+  if (values.help) {
+    process.stdout.write(USAGE);
+    return 0;
+  }
 
   for (const required of ["profile", "task"] as const) {
     if (!values[required]) {

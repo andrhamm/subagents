@@ -9,7 +9,7 @@ export class OpenAIBackend implements Backend {
     private readonly apiKey?: string,
   ) {}
 
-  async chat(req: ChatRequest, timeoutMs: number): Promise<ChatResponse> {
+  async chat(req: ChatRequest, timeoutMs: number): Promise<ChatResponse | null> {
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (this.apiKey) headers["authorization"] = `Bearer ${this.apiKey}`;
 
@@ -32,13 +32,23 @@ export class OpenAIBackend implements Backend {
     if (!res.ok) {
       throw new BackendError(`HTTP ${res.status}: ${markIfCut(text, 500)}`);
     }
+    let parsed: unknown;
     try {
-      return JSON.parse(text) as ChatResponse;
+      parsed = JSON.parse(text);
     } catch (e) {
       throw new BackendError(
         `non-JSON response from ${this.baseUrl}: ${markIfCut(text, 200)}`,
         { cause: e },
       );
     }
+    // JSON.parse happily accepts a top-level `null`, array, string, number,
+    // or boolean — none of those is the object shape `ChatResponse` promises.
+    // A cast (`as ChatResponse`) would lie about that to every caller; `null`
+    // says so honestly and pushes the decision to the loop, which already
+    // has a policy for a malformed response.
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed as ChatResponse;
   }
 }

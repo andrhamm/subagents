@@ -94,7 +94,14 @@ function shrinkField(envelope: Envelope, field: "summary" | "detail"): void {
 }
 
 export function buildEnvelope(r: LoopResult, o: EnvelopeInputs): Envelope {
-  const prompts = r.usage.map((u) => u.prompt_tokens ?? 0);
+  // Sibling of local_tokens's fix below: some proxies report usage counts
+  // as strings, and a bare `?? 0` only guards `null`/`undefined`, not a
+  // non-numeric string. `Math.max` happens to coerce a numeric string like
+  // "500" correctly, which hid this for the one shape already under test —
+  // but a genuinely non-numeric value (e.g. a proxy's placeholder string)
+  // makes `Number(...)` NaN and `Math.max` propagates it, serializing as
+  // `null` in a field typed `number`. Coerce the same way local_tokens does.
+  const prompts = r.usage.map((u) => Number(u.prompt_tokens) || 0);
   const peak = prompts.length ? Math.max(...prompts) : 0;
 
   // Most delegates emit `content: null` alongside tool_calls, so on a real

@@ -29,8 +29,8 @@ describe("OpenAIBackend", () => {
       { model: "m", messages: [{ role: "user", content: "yo" }] }, 5000);
     expect(seenPath).toBe("/v1/chat/completions");
     expect(seenBody.model).toBe("m");
-    expect(res.choices?.[0]?.message?.content).toBe("hi");
-    expect(res.usage?.prompt_tokens).toBe(5);
+    expect(res?.choices?.[0]?.message?.content).toBe("hi");
+    expect(res?.usage?.prompt_tokens).toBe(5);
   });
 
   it("sends an Authorization header only when a key is given", async () => {
@@ -98,5 +98,29 @@ describe("OpenAIBackend", () => {
     const url = serve(() => new Response("nope"));
     const call = new OpenAIBackend(url).chat({ model: "m", messages: [] }, 5000);
     await expect(call).rejects.not.toThrow(/…/);
+  });
+
+  // Second-round critical fix: a server answering HTTP 200 with the JSON
+  // literal `null` (or any other top-level non-object — an array, a number,
+  // a string) parses successfully via JSON.parse, so the earlier non-JSON
+  // guard never catches it. The old `as ChatResponse` cast then lied to
+  // every caller, and `res.usage` in loop.ts threw straight out of runLoop —
+  // the same failure class as the tool_calls fix, one level up the chain.
+  it("returns null, not a lying ChatResponse, when the body parses to JSON null", async () => {
+    const url = serve(() => new Response("null", { headers: { "content-type": "application/json" } }));
+    const res = await new OpenAIBackend(url).chat({ model: "m", messages: [] }, 5000);
+    expect(res).toBeNull();
+  });
+
+  it("returns null when the body parses to a non-object JSON value (an array)", async () => {
+    const url = serve(() => Response.json([1, 2, 3]));
+    const res = await new OpenAIBackend(url).chat({ model: "m", messages: [] }, 5000);
+    expect(res).toBeNull();
+  });
+
+  it("returns null when the body parses to a bare JSON number", async () => {
+    const url = serve(() => new Response("42", { headers: { "content-type": "application/json" } }));
+    const res = await new OpenAIBackend(url).chat({ model: "m", messages: [] }, 5000);
+    expect(res).toBeNull();
   });
 });

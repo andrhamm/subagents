@@ -41,13 +41,23 @@ export const readFile: Tool = {
     // the offset it was already at, or a falsely-complete empty read. Fail
     // loudly instead — `dispatch` already turns a tool throw into a
     // correctable ERROR: message, which is the right channel for a bad argument.
+    //
+    // `Number.isInteger`, not `Number.isFinite`: this tool's whole contract
+    // is exact line numbers, and a fractional offset/limit (e.g. `1.5`)
+    // still passes `isFinite`, producing fractional citations like `1.5`,
+    // a nonsense "lines 1.5-3.5 of 8" range, and a TRUNCATED marker telling
+    // the model to continue from a fractional offset next turn.
     const start = args["offset"] === undefined ? 1 : Number(args["offset"]);
-    if (!Number.isFinite(start) || start <= 0) {
-      throw new Error(`offset must be a positive number, got ${JSON.stringify(args["offset"])}`);
+    if (!Number.isInteger(start) || start <= 0) {
+      throw new Error(
+        `offset must be a positive integer, got ${JSON.stringify(args["offset"])}`,
+      );
     }
     const limit = args["limit"] === undefined ? MAX_READ_LINES : Number(args["limit"]);
-    if (!Number.isFinite(limit) || limit <= 0) {
-      throw new Error(`limit must be a positive number, got ${JSON.stringify(args["limit"])}`);
+    if (!Number.isInteger(limit) || limit <= 0) {
+      throw new Error(
+        `limit must be a positive integer, got ${JSON.stringify(args["limit"])}`,
+      );
     }
 
     const window = lines.slice(start - 1, start - 1 + limit);

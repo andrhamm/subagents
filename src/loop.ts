@@ -139,7 +139,7 @@ export async function runLoop(o: LoopOptions): Promise<LoopResult> {
       timeoutMs = Math.max(1000, Math.min(timeoutMs, o.deadlineAt - Date.now() - reserve));
     }
 
-    let res: ChatResponse;
+    let res: ChatResponse | null;
     try {
       res = await o.backend.chat(
         {
@@ -153,6 +153,22 @@ export async function runLoop(o: LoopOptions): Promise<LoopResult> {
       );
     } catch (e) {
       return done("error", "", e instanceof Error ? e.message : String(e));
+    }
+
+    // The fifth level of the same defect as malformed `choices`,
+    // `choice.message`, and `call.function` below: a 200-OK body that parses
+    // to JSON `null` (or any other non-object) is not a throw, it's a value
+    // — `Backend.chat`'s `ChatResponse | null` return type makes the
+    // compiler enforce a guard here rather than letting `res.usage` crash a
+    // turn after the run already paid for it. There is nothing to append to
+    // `messages` and no way to know what the server intended, so this ends
+    // the run rather than retrying.
+    if (res === null) {
+      return done(
+        "error", "",
+        `backend response was not a JSON object (malformed body: null, an array, or a bare ` +
+          "primitive) — the run cannot continue from an unreadable response",
+      );
     }
 
     if (res.usage) usage.push(res.usage);

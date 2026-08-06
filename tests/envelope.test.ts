@@ -60,6 +60,27 @@ describe("buildEnvelope", () => {
     const e = buildEnvelope(stringy, { wallSecs: 1, transcript: "/t.json", contextLimit: null });
     expect(e.local_tokens).toBe(505);
     expect(typeof e.local_tokens).toBe("number");
+    // Second-round fix: peak_prompt_tokens had the same bare `?? 0` bug one
+    // line above local_tokens's fix — a non-numeric prompt_tokens made
+    // Math.max(...) return NaN, which serializes as `null` in a field
+    // typed `number`.
+    expect(e.context.peak_prompt_tokens).toBe(500);
+    expect(Number.isNaN(e.context.peak_prompt_tokens)).toBe(false);
+  });
+
+  // The test above happens to pass even without the fix: `Math.max("500")`
+  // coerces a numeric string on its own, so it never exercises the actual
+  // bug. A genuinely non-numeric usage count (not just numeric-as-string)
+  // is what makes `Number(...)` produce `NaN` and `Math.max` propagate it —
+  // this is the case the fix at the peak_prompt_tokens computation covers.
+  it("does not turn a non-numeric usage count into NaN for peak_prompt_tokens", () => {
+    const junky: LoopResult = {
+      ...result,
+      usage: [{ prompt_tokens: "not-a-number" as unknown as number, completion_tokens: 5 }],
+    };
+    const e = buildEnvelope(junky, { wallSecs: 1, transcript: "/t.json", contextLimit: null });
+    expect(e.context.peak_prompt_tokens).toBe(0);
+    expect(Number.isNaN(e.context.peak_prompt_tokens)).toBe(false);
   });
 
   it("carries the truncation count so blind runs are visible", () => {

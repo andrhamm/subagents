@@ -179,4 +179,79 @@ describe("subagents run", () => {
     expect(out.endsWith("\n")).toBe(true);
     expect(out.trim().includes("\n")).toBe(false);
   });
+
+  // Second-round critical fix: a server answering HTTP 200 with the JSON
+  // literal `null` used to crash runLoop at `res.usage` — the throw escaped
+  // all the way to the top-level catch, so the CLI printed nothing on
+  // stdout and exited 1 with only a stack-trace-shaped stderr line. Now it
+  // must degrade to a normal non-ok envelope, end to end through the real
+  // CLI and the real OpenAIBackend (not just the in-process fake used
+  // elsewhere in this suite).
+  it("still emits a valid envelope on stdout when the backend body parses to JSON null", async () => {
+    const nullRoot = mkdtempSync(join(tmpdir(), "subagents-cli-null-"));
+    mkdirSync(join(nullRoot, "src"));
+    const nullServer = Bun.serve({
+      port: 0,
+      fetch: () => new Response("null", { headers: { "content-type": "application/json" } }),
+    });
+    writeFileSync(join(nullRoot, "subagents.yaml"), `
+providers:
+  test: { base_url: "http://127.0.0.1:${nullServer.port}/v1" }
+tiers:
+  cheap: { provider: test, model: "fake-model" }
+profiles:
+  digest: { tools: [read_file], tier: cheap }
+`);
+    try {
+      const proc = Bun.spawn(
+        ["bun", CLI, "run", "--profile", "digest", "--task", "x",
+         "--root", nullRoot, "--config", join(nullRoot, "subagents.yaml")],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      const out = await new Response(proc.stdout).text();
+      const code = await proc.exited;
+      // A malformed backend response is a non-ok run, not a never-started
+      // one: exit 2 (ran, envelope on stdout), never exit 1 with nothing.
+      expect(code).toBe(2);
+      const env = JSON.parse(out);
+      expect(env.status).toBe("error");
+      expect(env.transcript).toBeTruthy();
+    } finally {
+      nullServer.stop(true);
+      rmSync(nullRoot, { recursive: true, force: true });
+    }
+  });
+
+  // Second-round fix: the --help detection used to scan the whole argv for
+  // the literal string "--help"/"-h", which also matches an option's own
+  // *value* — so a real run whose --task or --transcript happened to be
+  // exactly "--help" silently printed usage and exited 0, which a caller
+  // reads as success despite no task having run at all.
+  it("does not treat --task's value as a --help flag", async () => {
+    const proc = Bun.spawn(
+      ["bun", CLI, "run", "--profile", "digest", "--task", "--help",
+       "--root", root, "--config", join(root, "subagents.yaml")],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    expect(out).not.toContain("Exit codes:");
+    const env = JSON.parse(out);
+    expect(env.status).toBeTruthy();
+  });
+
+  it("does not treat --transcript's value as a --help flag", async () => {
+    const proc = Bun.spawn(
+      ["bun", CLI, "run", "--profile", "digest", "--task", "real task",
+       "--root", root, "--config", join(root, "subagents.yaml"), "--transcript", "--help"],
+      // A relative "--help" transcript path must land inside the disposable
+      // temp root, not wherever the test runner's cwd happens to be.
+      { stdout: "pipe", stderr: "pipe", cwd: root },
+    );
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    expect(out).not.toContain("Exit codes:");
+    const env = JSON.parse(out);
+    expect(env.status).toBeTruthy();
+  });
 });

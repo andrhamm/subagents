@@ -7,11 +7,14 @@ import { resolveTools } from "../src/tools/registry";
 /** Backend that replays scripted responses and records what it was sent. */
 class ScriptedBackend implements Backend {
   public seen: ChatRequest[] = [];
-  constructor(private script: Array<ChatResponse | Error>) {}
-  async chat(req: ChatRequest): Promise<ChatResponse> {
+  constructor(private script: Array<ChatResponse | null | Error>) {}
+  async chat(req: ChatRequest): Promise<ChatResponse | null> {
     this.seen.push(structuredClone(req));
-    const next = this.script.shift();
-    if (!next) throw new Error("script exhausted");
+    // Checked by length, not by a falsy `next` check: `null` is itself a
+    // legitimate scripted response (a malformed backend body), and must be
+    // distinguishable from "the script ran out."
+    if (this.script.length === 0) throw new Error("script exhausted");
+    const next = this.script.shift() as ChatResponse | null | Error;
     if (next instanceof Error) throw next;
     return next;
   }
@@ -514,7 +517,41 @@ describe("runLoop capability gate", () => {
   });
 });
 
+// Second-round critical fix: a backend that parses a 200-OK JSON literal
+// `null` (or any other non-object top-level value) into `null` — which
+// `OpenAIBackend` now does rather than lying about it via `as ChatResponse`
+// — is the fifth level of the same chain as the tool_calls fix: choices,
+// choice.message, call.function, and now the response body itself. Every
+// consumer of `Backend.chat` must guard `null`, enforced by the type
+// (`ChatResponse | null`), not just by this one call site.
+describe("runLoop malformed backend response", () => {
+  it("does not throw and returns a valid error status when the backend resolves to null", async () => {
+    const backend = new ScriptedBackend([null]);
+    const r = await runLoop({ ...base, backend, tools: [] });
+    expect(r.status).toBe("error");
+    expect(r.turns).toBe(1);
+  });
+
+  it("still lets a later turn recover after a null response earlier is impossible — the run must end there", async () => {
+    // There is no way to "continue" past a null response (no messages to
+    // append, no way to know what the server intended), so it must be a
+    // terminal error for that run rather than something the loop retries.
+    const backend = new ScriptedBackend([null, assistant("should never be reached")]);
+    const r = await runLoop({ ...base, backend, tools: [] });
+    expect(r.status).toBe("error");
+    expect(backend.seen).toHaveLength(1);
+  });
+});
+
 describe("runLoop protocol conformance", () => {
+  // Note for the next author: this test's oracle is indirect. A protocol
+  // violation makes ProtocolValidatingBackend.chat throw, which runLoop
+  // catches into `status: "error"` like any other backend throw — so this
+  // test detects the violation via `expect(r.status).toBe("ok")`, not a
+  // direct assertion on the fake. That's fine today (the fix under test
+  // never legitimately errors), but a future test expecting a non-"ok"
+  // status through this fake would swallow a real protocol violation
+  // silently. Prefer asserting directly on `backend.seen` when possible.
   it("answers every issued tool_call_id, including a synthesized fallback for malformed calls", async () => {
     const backend = new ProtocolValidatingBackend([
       // Malformed: a call with an id but no `function` at all — the shape

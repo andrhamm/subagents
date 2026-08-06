@@ -81,5 +81,12 @@ export interface ChatResponse {
 }
 
 export interface Backend {
-  chat(req: ChatRequest, timeoutMs: number): Promise<ChatResponse>;
+  /**
+   * `null` means the body parsed as JSON but not as an object — a bare
+   * `null`, an array, a string, or a number. Every non-throwing outcome of
+   * an arbitrary HTTP 200 response is representable this way, so callers
+   * must handle `null` rather than trust a cast that a compiler can't check
+   * against what the wire actually sent.
+   */
+  chat(req: ChatRequest, timeoutMs: number): Promise<ChatResponse | null>;
 }

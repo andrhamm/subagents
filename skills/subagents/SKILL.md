@@ -12,10 +12,17 @@ grepping — and returns a small JSON envelope. Its transcript stays on disk;
 read it only when something needs checking.
 
 **What ships today:** the read-only loop above, config-driven providers and
-tiers, and the four tools below. **What doesn't:** editing, bash, MCP tools,
-worktree isolation, batch scheduling, and the benchmark harness are all
-planned but not present — do not tell a delegate to edit a file or run a
-command, and don't configure a profile expecting one to.
+tiers, and these four tools:
+
+- `read_file` — read a text file with line numbers, paged by offset/limit.
+- `glob` — find files by shell glob pattern.
+- `grep` — search file contents by regex, returning `path:lineno:text`.
+- `list_dir` — list files under a directory, recursively.
+
+**What doesn't:** editing, bash, MCP tools, worktree isolation, batch
+scheduling, and the benchmark harness are all planned but not present — do
+not tell a delegate to edit a file or run a command, and don't configure a
+profile expecting one to.
 
 ## When delegation actually pays
 
