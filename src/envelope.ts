@@ -1,5 +1,32 @@
 import type { LoopResult } from "./loop";
 
+// The envelope's small size is the entire reason it exists — a measured run
+// burned 165,362 delegate tokens and returned ~850 to the caller. But 600
+// was too small once measured against real answers: the fixed fields eat
+// ~200 chars, and a 20-item citation list came back with 6 items and a
+// truncation marker, sending the caller to the transcript — the exact cost
+// the envelope exists to avoid. 1200 (~300 tokens) holds the full list and
+// every write field. `summary` and `detail` remain the only fields whose
+// length the delegate controls, so they are still the only ones shrunk.
+export const MAX_ENVELOPE_CHARS = 1200;
+export const MAX_FILES_CHANGED = 10;
+
+export interface EnvelopeTest {
+  ran: boolean;
+  passed: boolean;
+  cmd: string;
+}
+
+export interface WriteOutcome {
+  /** Root-relative changed paths, from git. Entry-capped at MAX_FILES_CHANGED in the envelope. */
+  files: string[];
+  /** git --shortstat line; may carry an inspection-failure notice instead. */
+  diffstat: string;
+  /** The kept worktree's path — the diff lives there. */
+  worktree: string;
+  test?: EnvelopeTest;
+}
+
 export interface Envelope {
   status: string;
   summary: string;
@@ -14,12 +41,17 @@ export interface Envelope {
   truncations: number;
   local_tokens: number;
   transcript: string;
+  files_changed?: string[];
+  diffstat?: string;
+  test?: EnvelopeTest;
+  worktree?: string;
 }
 
 export interface EnvelopeInputs {
   wallSecs: number;
   transcript: string;
   contextLimit: number | null;
+  writes?: WriteOutcome;
 }
 
 const round = (n: number, places: number): number => {
@@ -27,12 +59,6 @@ const round = (n: number, places: number): number => {
   return Math.round(n * f) / f;
 };
 
-// The envelope's small size is the entire reason it exists — a measured run
-// burned 165,362 delegate tokens and returned ~850 to the caller. `summary`
-// and `detail` are the only fields whose length the caller (via the
-// delegate's own output) controls, so they are the only ones that need a
-// cap; every other field is a bounded number or a short caller-supplied path.
-const MAX_ENVELOPE_CHARS = 600;
 const TRUNCATION_MARKER = "...[truncated, see transcript]";
 
 const serializedLength = (e: Envelope): number => JSON.stringify(e).length;
@@ -134,6 +160,19 @@ export function buildEnvelope(r: LoopResult, o: EnvelopeInputs): Envelope {
       (sum, u) => sum + (Number(u.prompt_tokens) || 0) + (Number(u.completion_tokens) || 0), 0),
     transcript: o.transcript,
   };
+
+  if (o.writes) {
+    const { files } = o.writes;
+    // Entry-capped with an explicit remainder — the never-truncate-silently
+    // rule applies to the envelope itself. Pathological single-path lengths
+    // are the delegate's doing and fall to the final backstop below.
+    envelope.files_changed = files.length > MAX_FILES_CHANGED
+      ? [...files.slice(0, MAX_FILES_CHANGED), `…+${files.length - MAX_FILES_CHANGED} more`]
+      : files;
+    envelope.diffstat = o.writes.diffstat;
+    envelope.worktree = o.writes.worktree;
+    if (o.writes.test) envelope.test = o.writes.test;
+  }
 
   // Detail is supplementary — give it up first. Only reach into summary, the
   // field a naive caller reads, once detail alone can't make room.

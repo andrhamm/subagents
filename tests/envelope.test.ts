@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LoopResult } from "../src/loop";
-import { buildEnvelope } from "../src/envelope";
+import { buildEnvelope, MAX_ENVELOPE_CHARS, MAX_FILES_CHANGED } from "../src/envelope";
 import { writeTranscript } from "../src/transcript";
 
 const result: LoopResult = {
@@ -109,7 +109,7 @@ describe("buildEnvelope", () => {
 
   it("stays small — the whole point of the envelope", () => {
     const e = buildEnvelope(result, { wallSecs: 1, transcript: "/t", contextLimit: 32768 });
-    expect(JSON.stringify(e).length).toBeLessThan(600);
+    expect(JSON.stringify(e).length).toBeLessThan(MAX_ENVELOPE_CHARS);
   });
 
   // Fix round 1: the favorable fixture above never exercises a delegate that
@@ -122,7 +122,7 @@ describe("buildEnvelope", () => {
       detail: "D".repeat(5000),
     };
     const e = buildEnvelope(huge, { wallSecs: 1, transcript: "/t", contextLimit: 32768 });
-    expect(JSON.stringify(e).length).toBeLessThan(600);
+    expect(JSON.stringify(e).length).toBeLessThan(MAX_ENVELOPE_CHARS);
     // Still usable, not silently gutted to nothing.
     expect(e.summary.length).toBeGreaterThan(0);
   });
@@ -141,7 +141,7 @@ describe("buildEnvelope", () => {
       detail: `response had no choices: ${fakeRes.slice(0, 400)}`,
     };
     const e = buildEnvelope(stopped, { wallSecs: 1, transcript: "/t", contextLimit: null });
-    expect(JSON.stringify(e).length).toBeLessThan(600);
+    expect(JSON.stringify(e).length).toBeLessThan(MAX_ENVELOPE_CHARS);
     // The fallback still surfaces *why*, not just that it was cut.
     expect(e.summary).toContain("response had no choices");
   });
@@ -171,7 +171,7 @@ describe("buildEnvelope", () => {
     // this is dead code as of this fix, kept solely to derive the rig.
     const fullLen = JSON.stringify(shapeFor(plain)).length;
     const marker = "...[truncated, see transcript]";
-    const over = fullLen - 600 + 1;
+    const over = fullLen - MAX_ENVELOPE_CHARS + 1;
     const cut = Math.min(plain.length, over + marker.length);
     const keepIndex = plain.length - cut;
 
@@ -183,7 +183,7 @@ describe("buildEnvelope", () => {
       { ...result, summary: rigged, detail: "" },
       { wallSecs: 1, transcript: "/t", contextLimit: 32768 },
     );
-    expect(JSON.stringify(e).length).toBeLessThan(600);
+    expect(JSON.stringify(e).length).toBeLessThan(MAX_ENVELOPE_CHARS);
   });
 
   // Fix round 2 addendum: a parity sweep showed the round-1 formula's
@@ -209,7 +209,7 @@ describe("buildEnvelope", () => {
     });
     const fullLen = JSON.stringify(shapeFor(plain)).length;
     const marker = "...[truncated, see transcript]";
-    const over = fullLen - 600 + 1;
+    const over = fullLen - MAX_ENVELOPE_CHARS + 1;
     const cut = Math.min(plain.length, over + marker.length);
     const keepIndex = plain.length - cut;
 
@@ -221,7 +221,7 @@ describe("buildEnvelope", () => {
         { ...result, summary: rigged, detail: "" },
         { wallSecs: 1, transcript: "/t", contextLimit: 32768 },
       );
-      expect(JSON.stringify(e).length).toBeLessThan(600);
+      expect(JSON.stringify(e).length).toBeLessThan(MAX_ENVELOPE_CHARS);
     }
   });
 
@@ -238,7 +238,7 @@ describe("buildEnvelope", () => {
       { ...result, summary: multiline, detail: "" },
       { wallSecs: 1, transcript: "/t", contextLimit: 32768 },
     );
-    expect(JSON.stringify(e).length).toBeLessThan(600);
+    expect(JSON.stringify(e).length).toBeLessThan(MAX_ENVELOPE_CHARS);
     // The old formula's escape-heavy case kept only 271 bytes' worth out of
     // a 600 budget; retained text here should be substantially more (the
     // binary search converges on the true maximum fitting prefix, ~384
@@ -260,7 +260,7 @@ describe("buildEnvelope", () => {
       { ...result, summary: fullyEscaped, detail: "" },
       { wallSecs: 1, transcript: "/t", contextLimit: 32768 },
     );
-    expect(JSON.stringify(e).length).toBeLessThan(600);
+    expect(JSON.stringify(e).length).toBeLessThan(MAX_ENVELOPE_CHARS);
     expect(e.summary.length).toBeGreaterThan(100);
   });
 
@@ -299,6 +299,61 @@ describe("buildEnvelope", () => {
     expect(e.summary).toBe("found six routes");
     expect(e.detail).toBe(detail);
   });
+
+  describe("write outcome fields", () => {
+    const writes = {
+      files: ["src/a.ts", "src/b.ts"],
+      diffstat: "2 files changed, 5 insertions(+), 1 deletion(-)",
+      worktree: "/tmp/subagents-wt-1",
+    };
+
+    it("carries files_changed, diffstat and worktree when a write run changed files", () => {
+      const e = buildEnvelope(result, { wallSecs: 1, transcript: "/t", contextLimit: null, writes });
+      expect(e.files_changed).toEqual(["src/a.ts", "src/b.ts"]);
+      expect(e.diffstat).toBe(writes.diffstat);
+      expect(e.worktree).toBe("/tmp/subagents-wt-1");
+      expect(e.test).toBeUndefined();
+    });
+
+    it("omits every write field on a read-only run", () => {
+      const e = buildEnvelope(result, { wallSecs: 1, transcript: "/t", contextLimit: null });
+      expect(e.files_changed).toBeUndefined();
+      expect(e.diffstat).toBeUndefined();
+      expect(e.worktree).toBeUndefined();
+      expect(e.test).toBeUndefined();
+    });
+
+    it("caps files_changed with an explicit remainder marker, never silently", () => {
+      const files = Array.from({ length: 14 }, (_, i) => `src/f${i}.ts`);
+      const e = buildEnvelope(result, {
+        wallSecs: 1, transcript: "/t", contextLimit: null,
+        writes: { ...writes, files },
+      });
+      expect(e.files_changed).toHaveLength(MAX_FILES_CHANGED + 1);
+      expect(e.files_changed![MAX_FILES_CHANGED]).toBe("…+4 more");
+    });
+
+    it("carries the test gate verdict", () => {
+      const e = buildEnvelope(result, {
+        wallSecs: 1, transcript: "/t", contextLimit: null,
+        writes: { ...writes, test: { ran: true, passed: false, cmd: "bun test" } },
+      });
+      expect(e.test).toEqual({ ran: true, passed: false, cmd: "bun test" });
+    });
+
+    it("stays under the bound with every write field present and a long summary — both sides", () => {
+      const e = buildEnvelope(
+        { ...result, summary: "S".repeat(5000) },
+        {
+          wallSecs: 1, transcript: "/t", contextLimit: 32768,
+          writes: { ...writes, test: { ran: true, passed: true, cmd: "bun test" } },
+        },
+      );
+      expect(JSON.stringify(e).length).toBeLessThan(MAX_ENVELOPE_CHARS);
+      // The bound must not be satisfied by gutting the field the caller reads.
+      expect(e.summary.length).toBeGreaterThan(400);
+    });
+  });
 });
 
 describe("writeTranscript", () => {
@@ -313,6 +368,19 @@ describe("writeTranscript", () => {
     expect(back.messages).toHaveLength(3);
     expect(back.messages[0].role).toBe("system");
     expect(back.usage).toHaveLength(3);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("persists test gate output when present", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "subagents-tr2-"));
+    const path = join(dir, "t.json");
+    await writeTranscript(path, {
+      model: "m", task: "t", status: "ok",
+      messages: result.messages, usage: result.usage,
+      test_output: "1 fail\nexpected 2, got 3",
+    });
+    const back = await Bun.file(path).json();
+    expect(back.test_output).toContain("expected 2");
     rmSync(dir, { recursive: true, force: true });
   });
 });

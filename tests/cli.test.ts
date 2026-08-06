@@ -173,7 +173,7 @@ describe("subagents run", () => {
     const out = await new Response(proc.stdout).text();
     expect(await proc.exited).toBe(0);
     // Exactly one trailing newline, no pretty-printed indentation — the
-    // envelope's own size bound (buildEnvelope, 600 chars) is measured
+    // envelope's own size bound (buildEnvelope, MAX_ENVELOPE_CHARS) is measured
     // against JSON.stringify(e) with no spacing, so stdout must emit that
     // same compact form rather than a differently-sized pretty one.
     expect(out.endsWith("\n")).toBe(true);

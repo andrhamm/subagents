@@ -6,6 +6,8 @@ export interface TranscriptData {
   status: string;
   messages: Message[];
   usage: Usage[];
+  /** Test gate output, when a write run had one. Envelope carries only the verdict. */
+  test_output?: string;
 }
 
 /**
