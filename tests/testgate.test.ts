@@ -43,4 +43,19 @@ describe("runTestGate", () => {
     expect(r.output.length).toBeLessThanOrEqual(MAX_TEST_OUTPUT_CHARS + 1);
     expect(r.output.endsWith("…")).toBe(true);
   });
+
+  it("returns within the budget even when the command backgrounds a grandchild", async () => {
+    const started = Date.now();
+    const r = await runTestGate("( sleep 6 & ) ; echo parent-done; exit 0", process.cwd(), 300);
+    expect(Date.now() - started).toBeLessThan(3000);
+    expect(r.timedOut).toBe(true);
+    expect(r.passed).toBe(false);
+  });
+
+  it("kills a command that traps SIGTERM", async () => {
+    const started = Date.now();
+    const r = await runTestGate("trap '' TERM; sleep 6", process.cwd(), 300);
+    expect(Date.now() - started).toBeLessThan(3000);
+    expect(r.timedOut).toBe(true);
+  });
 });
