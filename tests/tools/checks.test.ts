@@ -70,6 +70,14 @@ describe("makeRunChecks", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("shows the TRUE tail even when the stage output exceeds the stage cap", async () => {
+    const tool = makeRunChecks(
+      [{ name: "tests", cmd: "for i in $(seq 1 2000); do echo filler-line-$i; done; echo REAL-FINAL-FAILURE-LINE; exit 1" }],
+      10_000);
+    const r = await tool.run({}, { root: process.cwd() });
+    expect(r.content).toContain("REAL-FINAL-FAILURE-LINE");
+  });
 });
 
 describe("run_checks inside the loop's deadline gate", () => {

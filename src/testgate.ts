@@ -1,7 +1,8 @@
 import type { CheckConfig } from "./config";
-import { markIfCut, markIfCutTail } from "./text";
+import { markIfCutTail } from "./text";
 
-/** Cap on captured test output. Marked when cut — it feeds the transcript, not the envelope. */
+/** Cap on captured test output, tail-keeping — it feeds the transcript and the in-loop tail display.
+ *  Failures print at the end, so a tail of a tail is still the true tail. */
 export const MAX_TEST_OUTPUT_CHARS = 10_000;
 
 export interface StageResult {
@@ -9,7 +10,7 @@ export interface StageResult {
   passed: boolean;
   timedOut: boolean;
   cmd: string;
-  /** Combined stdout+stderr, mark-if-cut at MAX_TEST_OUTPUT_CHARS. */
+  /** Combined stdout+stderr, tail-kept at MAX_TEST_OUTPUT_CHARS (failures print at the end). */
   output: string;
 }
 
@@ -26,7 +27,7 @@ interface TestGateResult {
   passed: boolean;
   timedOut: boolean;
   cmd: string;
-  /** Combined stdout + stderr, mark-if-cut at MAX_TEST_OUTPUT_CHARS. */
+  /** Combined stdout + stderr, tail-kept at MAX_TEST_OUTPUT_CHARS (failures print at the end). */
   output: string;
 }
 
@@ -77,7 +78,7 @@ async function runStage(
     passed: !timedOut && code === 0,
     timedOut,
     cmd,
-    output: markIfCut(combined, MAX_TEST_OUTPUT_CHARS),
+    output: markIfCutTail(combined, MAX_TEST_OUTPUT_CHARS),
   };
 }
 

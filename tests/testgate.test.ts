@@ -37,13 +37,13 @@ describe("runChecks single-stage (backward compat)", () => {
     expect(r.stages[0]!.passed).toBe(false);
   });
 
-  it("caps captured output with an explicit marker, never silently", async () => {
+  it("caps captured output with a tail-keeping marker at the front, never silently", async () => {
     const r = await runChecks(
       [{ name: "tests", cmd: `head -c ${MAX_TEST_OUTPUT_CHARS + 5000} /dev/zero | tr '\\0' 'x'` }],
       process.cwd(), 5000,
     );
-    expect(r.stages[0]!.output.length).toBeLessThanOrEqual(MAX_TEST_OUTPUT_CHARS + 1);
-    expect(r.stages[0]!.output.endsWith("…")).toBe(true);
+    expect(r.stages[0]!.output).toMatch(/^\[\d+ chars cut from the front\]…/);
+    expect(r.stages[0]!.output.length).toBeLessThanOrEqual(MAX_TEST_OUTPUT_CHARS + 100); // +100 for marker
   });
 
   it("returns within the budget even when the command backgrounds a grandchild", async () => {
