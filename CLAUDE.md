@@ -15,9 +15,9 @@ models. `src/` is authoritative over every doc when they disagree.
   committed template.
 - A write profile's `checks` (ordered stages; `test_cmd` is sugar for one)
   gate the worktree after the loop, and `run_checks` lets the delegate run
-  the same pipeline itself mid-loop. Both are new wire shapes — a tool
-  schema and an envelope field — so the live-verification rule below still
-  applies before either is trusted past the local suite's scripted backend.
+  the same pipeline itself mid-loop. Both wire shapes (tool schema, envelope
+  field) were live-verified 2026-08-07 on lan-host: a 4.6B delegate called
+  `run_checks` itself and both stages reported in the envelope.
 
 ## Hard constraints
 

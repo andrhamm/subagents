@@ -12,10 +12,12 @@ execution, the envelope, batch (model grouping, concurrency evidence, the
 progress file, the batch deadline, and escalation), and benchmark (fixture
 format, oracle scoring, baseline gating). The read-only loop, the write
 loop, and a single-stage test gate are verified against a live model
-([bench](bench/2026-08-06-lan-host.md)); the staged `checks:` pipeline and the
-`run_checks` tool are new since that bench and so far covered only by the
-local suite's scripted backend — not yet re-verified live, per this repo's
-own rule that a wire-shape change earns that check before it's trusted. The
+([bench](bench/2026-08-06-lan-host.md)); the staged `checks:` pipeline, the
+`run_checks` tool, and the bench suite were live-verified 2026-08-07 on the
+same host — a 4.6B delegate ran read → edit → `run_checks` (both stages
+green) → stop in 3.5s, and `subagents bench --tiers cheap` passed both
+committed fixtures — honoring this repo's rule that a wire-shape change
+earns a live check before it's trusted. The
 **Batch scheduling** and **Benchmark** sections below describe shipped
 behavior, not a plan. The MCP client, the LM Studio adapter, and `bash` are
 designed here but not built. `src/` is authoritative over this document

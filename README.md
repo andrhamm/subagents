@@ -6,10 +6,10 @@ agent pays a small fixed context cost instead of reading everything itself.
 > **Status: read-only loop, worktree-confined writes, staged checks, batch
 > scheduling, and deterministic fixture benchmarking ship; bash and MCP are
 > planned.** `subagents run`, `subagents batch`, and `subagents bench` work
-> today; the read/write loops and single-stage gate are verified against live
-> models, the staged `checks` pipeline and benchmark so far against the test
-> suite's scripted backend. See [What ships today](#what-ships-today) below for
-> the exact boundary.
+> today, all verified against live models — including the staged `checks`
+> pipeline with a delegate calling `run_checks` mid-loop, and the bench suite
+> run end to end. See [What ships today](#what-ships-today) below for the
+> exact boundary.
 
 ## Why
 
