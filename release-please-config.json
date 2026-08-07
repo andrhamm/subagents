@@ -3,7 +3,19 @@
   "packages": {
     ".": {
       "release-type": "node",
-      "bump-minor-pre-major": true
+      "bump-minor-pre-major": true,
+      "extra-files": [
+        {
+          "type": "json",
+          "path": ".claude-plugin/plugin.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": ".claude-plugin/marketplace.json",
+          "jsonpath": "$.plugins[0].version"
+        }
+      ]
     }
   }
 }
