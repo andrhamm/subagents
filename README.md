@@ -63,6 +63,9 @@ measured across six models from 4.6B up
   per-provider fan-out; `--escalate-tier` re-runs failed or truncation-blind
   jobs on a stronger tier; `--progress` maintains a pollable state file; a
   batch deadline stops *starting* jobs and names the ones that never ran
+- `subagents bench`: deterministic fixture suite with oracles, baseline
+  regression gating, per-turn logs; measures harness deltas, not model
+  capability (see [bench/README.md](bench/README.md))
 
 ## What's planned, not built
 
@@ -71,7 +74,6 @@ measured across six models from 4.6B up
 - An MCP client for external tools
 - The LM Studio adapter (capability probe, `context.limit`/`context.pressure`
   — both are `null` today because nothing populates them yet)
-- The agentic-loop benchmark harness
 
 ## Which model should I run?
 

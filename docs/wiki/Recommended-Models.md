@@ -259,4 +259,5 @@ run `subagents` against a model on hardware not represented here, the useful rep
 is: model id and quantization, usable memory, loaded context, the task, ground-truth
 recall, whether line citations were exact, whether anything was fabricated, wall
 time, and how the model terminated. Fabrication rate and termination style matter as
-much as recall.
+much as recall. For comparable rows, use the repo's benchmark suite (`subagents bench`)
+so measurements arrive with the same oracle and task shape.

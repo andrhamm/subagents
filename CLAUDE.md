@@ -9,6 +9,8 @@ models. `src/` is authoritative over every doc when they disagree.
   (needs `bun install` once — `tsc` comes from devDependencies).
 - Run: `bun src/cli.ts run --profile <p> --task "…" --root <repo>`;
   batch: `bun src/cli.ts batch --jobs jobs.yaml`.
+- Bench: `bun src/cli.ts bench --tiers cheap --config subagents.yaml`.
+- Import Exercism fixtures: `bun src/bench/import-exercism.ts --track typescript --count 20`.
 - `subagents.yaml` is gitignored local config; `subagents.example.yaml` is the
   committed template.
 - A write profile's `checks` (ordered stages; `test_cmd` is sugar for one)
@@ -44,6 +46,8 @@ is loaded — verify ids against `/api/v0/models` before trusting a run.
 ## Where things are
 
 - Design: `docs/design.md`. Live bench results: `docs/bench/`.
+- Benchmark: `bench/` — fixtures in `bench/fixtures/` (committed), results
+  gitignored; `bench/README.md` for the one rule about reading results.
 - Model guidance (mirrors the GitHub wiki): `docs/wiki/Recommended-Models.md`.
 - Orchestrator-facing usage skill: `skills/subagents/SKILL.md` — it is the
   first thing a consuming agent reads; keep its claims matched to `src/`.
