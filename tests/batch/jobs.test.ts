@@ -13,6 +13,7 @@ tiers:
   strong: { provider: local, model: "big" }
 profiles:
   digest: { tools: [read_file, grep], tier: cheap }
+  fix: { tools: [read_file, edit_file], tier: cheap, test_cmd: "bun test" }
 `);
 
 const JOBS_OK = `
@@ -83,5 +84,33 @@ describe("resolveJobs", () => {
     } finally {
       rmSync(join(gone, ".."), { recursive: true, force: true });
     }
+  });
+});
+
+describe("per-job check overrides", () => {
+  it("replaces the profile's checks with the job's test_cmd", () => {
+    const specs = parseJobs(
+      'jobs:\n  - { id: a, profile: fix, task: t, test_cmd: "bun test src/a.test.ts" }\n');
+    const jobs = resolveJobs(CFG, specs, process.cwd());
+    expect(jobs[0]!.run.checks).toEqual([{ name: "tests", cmd: "bun test src/a.test.ts" }]);
+  });
+
+  it("replaces the profile's checks with the job's staged list", () => {
+    const specs = parseJobs(
+      'jobs:\n  - { id: a, profile: fix, task: t, checks: [{ name: t1, cmd: "x" }, { name: t2, cmd: "y" }] }\n');
+    const jobs = resolveJobs(CFG, specs, process.cwd());
+    expect(jobs[0]!.run.checks.map((c) => c.name)).toEqual(["t1", "t2"]);
+  });
+
+  it("rejects a job carrying both spellings, naming the job", () => {
+    const specs = parseJobs(
+      'jobs:\n  - { id: bad, profile: fix, task: t, test_cmd: "x", checks: [{ name: n, cmd: "y" }] }\n');
+    expect(() => resolveJobs(CFG, specs, process.cwd())).toThrow(/job 'bad'.*test_cmd.*checks/s);
+  });
+
+  it("leaves the profile's checks alone when the job overrides nothing", () => {
+    const specs = parseJobs("jobs:\n  - { id: a, profile: fix, task: t }\n");
+    const jobs = resolveJobs(CFG, specs, process.cwd());
+    expect(jobs[0]!.run.checks).toEqual([{ name: "tests", cmd: "bun test" }]);
   });
 });

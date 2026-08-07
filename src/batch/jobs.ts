@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import type { Config, ResolvedRun } from "../config";
-import { resolveProfile } from "../config";
+import type { CheckConfig, Config, ResolvedRun } from "../config";
+import { desugarChecks, resolveProfile, validateChecks } from "../config";
 
 export interface JobSpec {
   id: string;
@@ -9,6 +9,8 @@ export interface JobSpec {
   task: string;
   root?: string;
   tier?: string;
+  test_cmd?: string;
+  checks?: CheckConfig[];
 }
 
 export interface ResolvedJob {
@@ -59,6 +61,8 @@ export function parseJobs(text: string): JobSpec[] {
       task: job["task"],
       ...(typeof job["root"] === "string" ? { root: job["root"] } : {}),
       ...(typeof job["tier"] === "string" ? { tier: job["tier"] } : {}),
+      ...(typeof job["test_cmd"] === "string" ? { test_cmd: job["test_cmd"] } : {}),
+      ...(job["checks"] !== undefined ? { checks: validateChecks(job["checks"], `jobs[${i}]`) } : {}),
     };
   });
 }
@@ -74,6 +78,15 @@ export function resolveJobs(cfg: Config, specs: JobSpec[], defaultRoot: string):
       run = resolveProfile(cfg, spec.profile, spec.tier !== undefined ? { tier: spec.tier } : {});
     } catch (e) {
       throw new Error(`job '${spec.id}': ${e instanceof Error ? e.message : String(e)}`);
+    }
+    if (spec.test_cmd !== undefined || spec.checks !== undefined) {
+      let checks: CheckConfig[];
+      try {
+        checks = desugarChecks(spec.test_cmd, spec.checks, "job");
+      } catch (e) {
+        throw new Error(`job '${spec.id}': ${e instanceof Error ? e.message : String(e)}`);
+      }
+      run = { ...run, checks };
     }
     const root = resolve(spec.root ?? defaultRoot);
     if (!existsSync(root)) {

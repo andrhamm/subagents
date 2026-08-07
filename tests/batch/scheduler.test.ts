@@ -12,7 +12,7 @@ function job(id: string, model: string, maxInFlight = 1): ResolvedJob {
     run: {
       baseUrl: "http://x/v1", kind: "openai", model, sampling: {}, tools: [],
       maxTurns: 1, maxTokens: 1, timeoutMs: 1000, worktree: false,
-      testTimeoutMs: 1000, provider: "local", maxInFlight,
+      checks: [], testTimeoutMs: 1000, provider: "local", maxInFlight,
     },
   };
 }

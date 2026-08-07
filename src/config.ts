@@ -12,6 +12,53 @@ export interface TierConfig {
   model: string;
   sampling?: string;
 }
+
+export interface CheckConfig {
+  /** Short stage label; appears in the envelope's checks array. */
+  name: string;
+  /** Caller-authored shell command, run in the worktree. The model never writes this. */
+  cmd: string;
+}
+
+/**
+ * Validate a raw checks list from YAML. Shared by profile resolution and the
+ * per-job override in batch — a bad stage must fail fast either way, naming
+ * its position.
+ */
+export function validateChecks(raw: unknown, where: string): CheckConfig[] {
+  if (!Array.isArray(raw)) throw new Error(`${where}: checks must be a list`);
+  const seen = new Set<string>();
+  return raw.map((c, i) => {
+    if (c === null || typeof c !== "object" || Array.isArray(c)) {
+      throw new Error(`${where}: checks[${i}] must be a mapping`);
+    }
+    const stage = c as Record<string, unknown>;
+    if (typeof stage["name"] !== "string" || !stage["name"]) {
+      throw new Error(`${where}: checks[${i}] missing 'name'`);
+    }
+    if (typeof stage["cmd"] !== "string" || !stage["cmd"]) {
+      throw new Error(`${where}: checks[${i}] missing 'cmd'`);
+    }
+    if (seen.has(stage["name"])) {
+      throw new Error(`${where}: duplicate check name '${stage["name"]}'`);
+    }
+    seen.add(stage["name"]);
+    return { name: stage["name"], cmd: stage["cmd"] };
+  });
+}
+
+/** test_cmd is sugar for a single tests stage; both spellings at once is ambiguous. */
+export function desugarChecks(
+  testCmd: string | undefined, checks: unknown, where: string,
+): CheckConfig[] {
+  if (testCmd !== undefined && checks !== undefined) {
+    throw new Error(`${where}: give test_cmd or checks, not both`);
+  }
+  if (checks !== undefined) return validateChecks(checks, where);
+  if (testCmd !== undefined) return [{ name: "tests", cmd: testCmd }];
+  return [];
+}
+
 export interface ProfileConfig {
   tools: string[];
   tier: string;
@@ -19,6 +66,8 @@ export interface ProfileConfig {
   worktree?: boolean;
   /** Command the harness runs after the delegate changed files. */
   test_cmd?: string;
+  /** Ordered checks; replaces test_cmd alternative spelling. */
+  checks?: CheckConfig[];
 }
 export interface Defaults {
   max_turns?: number;
@@ -44,7 +93,7 @@ export interface ResolvedRun {
   maxTokens: number;
   timeoutMs: number;
   worktree: boolean;
-  testCmd?: string;
+  checks: CheckConfig[];
   testTimeoutMs: number;
   /** The tier's provider name — batch groups jobs by (provider, model). */
   provider: string;
@@ -136,6 +185,21 @@ export function resolveProfile(
     );
   }
 
+  const resolvedChecks = desugarChecks(
+    profile.test_cmd, profile.checks, `profile '${profileName}'`);
+  if (profile.tools.includes("run_checks") && resolvedChecks.length === 0) {
+    throw new Error(
+      `profile '${profileName}' lists run_checks but has no checks to run — ` +
+        "add test_cmd or a checks list",
+    );
+  }
+  if (profile.tools.includes("run_checks") && !worktree) {
+    throw new Error(
+      `profile '${profileName}' lists run_checks but runs without a worktree — ` +
+        "checks execute where the delegate works; add a write tool or 'worktree: true'",
+    );
+  }
+
   return {
     baseUrl: provider.base_url.replace(/\/+$/, ""),
     kind: provider.kind ?? "openai",
@@ -146,7 +210,7 @@ export function resolveProfile(
     maxTokens: d.max_tokens ?? DEFAULTS.maxTokens,
     timeoutMs: d.timeout_ms ?? DEFAULTS.timeoutMs,
     worktree,
-    ...(profile.test_cmd !== undefined ? { testCmd: profile.test_cmd } : {}),
+    checks: resolvedChecks,
     testTimeoutMs: d.test_timeout_ms ?? DEFAULTS.testTimeoutMs,
     provider: tier.provider,
     maxInFlight,

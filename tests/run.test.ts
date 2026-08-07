@@ -75,7 +75,7 @@ function writeRun(baseUrl: string): ResolvedRun {
     maxTokens: 8000,
     timeoutMs: 300_000,
     worktree: true,
-    testCmd: "sleep 5",
+    checks: [{ name: "tests", cmd: "sleep 5" }],
     testTimeoutMs: 120_000,
     provider: "test",
     maxInFlight: 2,

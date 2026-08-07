@@ -85,13 +85,13 @@ describe("write profiles", () => {
   it("defaults worktree off for a read-only profile", () => {
     const r = resolveProfile(parseConfig(YAML_WRITES), "digest");
     expect(r.worktree).toBe(false);
-    expect(r.testCmd).toBeUndefined();
+    expect(r.checks).toEqual([]);
   });
 
   it("defaults worktree on when the profile has a write tool", () => {
     const r = resolveProfile(parseConfig(YAML_WRITES), "fix");
     expect(r.worktree).toBe(true);
-    expect(r.testCmd).toBe("bun test");
+    expect(r.checks).toEqual([{ name: "tests", cmd: "bun test" }]);
   });
 
   it("rejects write tools with worktree explicitly off — in-place writes are not shipped", () => {
@@ -141,5 +141,75 @@ describe("provider concurrency", () => {
       'local: { base_url: "http://127.0.0.1:1234/v1", kind: lmstudio, max_in_flight: 0 }',
     );
     expect(() => resolveProfile(parseConfig(yaml), "digest")).toThrow(/max_in_flight/);
+  });
+});
+
+const YAML_CHECKS = `
+providers:
+  local: { base_url: "http://127.0.0.1:1234/v1" }
+tiers:
+  cheap: { provider: local, model: "m" }
+profiles:
+  legacy:  { tools: [read_file, edit_file], tier: cheap, test_cmd: "bun test" }
+  staged:
+    tools: [read_file, edit_file, run_checks]
+    tier: cheap
+    checks:
+      - { name: tests, cmd: "bun test" }
+      - { name: style, cmd: "eslint src/" }
+  both:    { tools: [read_file, edit_file], tier: cheap, test_cmd: "x", checks: [{ name: t, cmd: "y" }] }
+  trigger: { tools: [read_file, run_checks], tier: cheap }
+  nowt:    { tools: [read_file, run_checks], tier: cheap, checks: [{ name: t, cmd: "x" }] }
+  dupes:
+    tools: [read_file, edit_file]
+    tier: cheap
+    checks:
+      - { name: tests, cmd: "a" }
+      - { name: tests, cmd: "b" }
+`;
+
+describe("checks resolution", () => {
+  it("desugars test_cmd into a single tests stage", () => {
+    const r = resolveProfile(parseConfig(YAML_CHECKS), "legacy");
+    expect(r.checks).toEqual([{ name: "tests", cmd: "bun test" }]);
+  });
+
+  it("resolves an ordered checks list as given", () => {
+    const r = resolveProfile(parseConfig(YAML_CHECKS), "staged");
+    expect(r.checks.map((c) => c.name)).toEqual(["tests", "style"]);
+  });
+
+  it("resolves an empty checks list for a profile with neither", () => {
+    const r = resolveProfile(parseConfig(YAML_CHECKS.replace(/^  legacy.*$/m,
+      '  legacy:  { tools: [read_file], tier: cheap }')), "legacy");
+    expect(r.checks).toEqual([]);
+  });
+
+  it("rejects test_cmd and checks together — one spelling per profile", () => {
+    expect(() => resolveProfile(parseConfig(YAML_CHECKS), "both"))
+      .toThrow(/test_cmd.*checks|checks.*test_cmd/);
+  });
+
+  it("rejects run_checks in tools without any checks to run", () => {
+    expect(() => resolveProfile(parseConfig(YAML_CHECKS), "trigger"))
+      .toThrow(/run_checks.*no checks/);
+  });
+
+  it("rejects run_checks on a profile that runs without a worktree", () => {
+    // Checks execute where the delegate edits. Without a worktree that
+    // would be the caller's real tree — a caller-authored test command is
+    // trusted to run, but only inside the disposable copy.
+    expect(() => resolveProfile(parseConfig(YAML_CHECKS), "nowt"))
+      .toThrow(/run_checks.*worktree/);
+  });
+
+  it("rejects duplicate stage names", () => {
+    expect(() => resolveProfile(parseConfig(YAML_CHECKS), "dupes"))
+      .toThrow(/duplicate check name 'tests'/);
+  });
+
+  it("rejects a stage missing name or cmd", () => {
+    const bad = YAML_CHECKS.replace('{ name: tests, cmd: "bun test" }', '{ name: tests }');
+    expect(() => resolveProfile(parseConfig(bad), "staged")).toThrow(/checks\[0\]/);
   });
 });

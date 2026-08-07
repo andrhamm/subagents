@@ -78,7 +78,7 @@ export async function executeRun(req: RunRequest): Promise<RunOutcome> {
           diffstat: changes.diffstat,
           worktree: worktreeDir,
         };
-        if (run.testCmd) {
+        if (run.checks.length > 0) {
           // The gate runs after the loop, so it draws from whatever's left of
           // the caller's deadline, not a fresh budget of its own — a 120s
           // default test_timeout_ms inside a 60s --deadline-secs would let
@@ -89,8 +89,10 @@ export async function executeRun(req: RunRequest): Promise<RunOutcome> {
           const gateTimeoutMs = req.deadlineAt === undefined
             ? run.testTimeoutMs
             : Math.max(1000, Math.min(run.testTimeoutMs, req.deadlineAt - Date.now()));
-          const gate = await runTestGate(run.testCmd, worktreeDir, gateTimeoutMs);
-          writeOutcome.test = { ran: true, passed: gate.passed, cmd: run.testCmd };
+          // Task 4 replaces this with the staged runner
+          const testCmd = run.checks[0]!.cmd;
+          const gate = await runTestGate(testCmd, worktreeDir, gateTimeoutMs);
+          writeOutcome.test = { ran: true, passed: gate.passed, cmd: testCmd };
           testOutput = gate.timedOut
             ? `[test gate timed out after ${gateTimeoutMs}ms]\n${gate.output}`
             : gate.output;
