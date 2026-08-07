@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/andrhamm/subagents/compare/subagents-v0.2.0...subagents-v0.2.1) (2026-08-07)
+
+
+### Bug Fixes
+
+* plugin manifests ride the release train ([1403e83](https://github.com/andrhamm/subagents/commit/1403e83ae965b228150bc5d8c28accd7264cf6db))
+
 ## [0.2.0](https://github.com/andrhamm/subagents/compare/subagents-v0.1.0...subagents-v0.2.0) (2026-08-07)
 
 
