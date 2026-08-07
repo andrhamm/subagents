@@ -41,6 +41,34 @@ it("wants 1", () => expect(x()).toBe(1));
     files: { solution: ["broken-ex.ts"], test: ["broken-ex.test.ts"], exemplar: [".meta/exemplar.ts"] },
   }));
   writeFileSync(join(bad, "README.md"), "# Broken\n");
+
+  // A mangled exercise: .meta/config.json is invalid JSON.
+  const mangled = join(dir, "exercises", "practice", "mangled-ex");
+  mkdirSync(join(mangled, ".meta"), { recursive: true });
+  writeFileSync(join(mangled, "mangled-ex.ts"), "export const y = () => 1;\n");
+  writeFileSync(join(mangled, "mangled-ex.test.ts"), `
+import { it, expect } from "bun:test";
+import { y } from "./mangled-ex";
+it("works", () => expect(y()).toBe(1));
+`);
+  writeFileSync(join(mangled, ".meta", "exemplar.ts"), "export const y = () => 1;\n");
+  writeFileSync(join(mangled, ".meta", "config.json"), "{not json");
+  writeFileSync(join(mangled, "README.md"), "# Mangled\n");
+
+  // No README exercise: valid meta + passing exemplar, but no README.md.
+  const noreadme = join(dir, "exercises", "practice", "no-readme-ex");
+  mkdirSync(join(noreadme, ".meta"), { recursive: true });
+  writeFileSync(join(noreadme, "no-readme-ex.ts"), "export const z = () => 2;\n");
+  writeFileSync(join(noreadme, "no-readme-ex.test.ts"), `
+import { it, expect } from "bun:test";
+import { z } from "./no-readme-ex";
+it("works", () => expect(z()).toBe(2));
+`);
+  writeFileSync(join(noreadme, ".meta", "exemplar.ts"), "export const z = () => 2;\n");
+  writeFileSync(join(noreadme, ".meta", "config.json"), JSON.stringify({
+    files: { solution: ["no-readme-ex.ts"], test: ["no-readme-ex.test.ts"], exemplar: [".meta/exemplar.ts"] },
+  }));
+
   return dir;
 }
 
@@ -48,17 +76,24 @@ const cleanups: string[] = [];
 afterEach(() => { for (const d of cleanups.splice(0)) rmSync(d, { recursive: true, force: true }); });
 
 describe("importTrack", () => {
-  it("imports the solvable exercise as a loadable fixture and skips the broken one, with reasons", async () => {
+  it("imports the solvable exercise as a loadable fixture and skips the broken ones, with reasons", async () => {
     const track = fakeTrack();
     const dest = mkdtempSync(join(tmpdir(), "subagents-imp-"));
     cleanups.push(track, dest);
 
     const r = await importTrack(track, dest);
     expect(r.imported).toEqual(["two-fer"]);
-    expect(r.skipped).toHaveLength(1);
-    expect(r.skipped[0]!.slug).toBe("broken-ex");
-    expect(r.skipped[0]!.reason).toMatch(/exemplar.*fail/i);
+    expect(r.skipped).toHaveLength(3);
+    const skippedSlugs = r.skipped.map((s) => s.slug).sort();
+    expect(skippedSlugs).toEqual(["broken-ex", "mangled-ex", "no-readme-ex"]);
 
+    // Verify specific skip reasons.
+    const bySlug = Object.fromEntries(r.skipped.map((s) => [s.slug, s.reason]));
+    expect(bySlug["broken-ex"]).toMatch(/exemplar.*fail/i);
+    expect(bySlug["mangled-ex"]).toMatch(/unexpected error/i);
+    expect(bySlug["no-readme-ex"]).toBe("no README.md");
+
+    // Verify the solvable one still imported and is loadable.
     const fx = await loadFixture(join(dest, "two-fer"));
     expect(fx.task).toContain("README");
     expect(fx.tools).toContain("edit_file");

@@ -2,7 +2,7 @@ import {
   cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 
 interface MetaConfig {
@@ -42,63 +42,71 @@ export async function importTrack(
 
   for (const slug of slugs) {
     if (opts.count !== undefined && imported.length >= opts.count) break;
-    const src = join(practiceDir, slug);
-    const metaPath = join(src, ".meta", "config.json");
-    if (!existsSync(metaPath)) {
-      skipped.push({ slug, reason: "no .meta/config.json" });
-      continue;
-    }
-    const meta = JSON.parse(await Bun.file(metaPath).text()) as MetaConfig;
-    const solutions = meta.files?.solution ?? [];
-    const tests = meta.files?.test ?? [];
-    const exemplars = meta.files?.exemplar ?? [];
-    if (solutions.length === 0 || tests.length === 0 || exemplars.length !== solutions.length) {
-      skipped.push({ slug, reason: "unusable .meta files layout" });
-      continue;
-    }
-
-    // Prove the oracle: exemplar over stub, then bun test must pass.
-    const proof = mkdtempSync(join(tmpdir(), `subagents-exemplar-${slug}-`));
     try {
-      for (const t of tests) {
-        mkdirSync(join(proof, dirname(t)), { recursive: true });
-        cpSync(join(src, t), join(proof, t));
-      }
-      for (let i = 0; i < solutions.length; i++) {
-        mkdirSync(join(proof, dirname(solutions[i]!)), { recursive: true });
-        cpSync(join(src, exemplars[i]!), join(proof, solutions[i]!));
-      }
-      if (!(await bunTestPasses(proof))) {
-        skipped.push({ slug, reason: "exemplar fails under bun test (jest-compat gap)" });
+      const src = join(practiceDir, slug);
+      const metaPath = join(src, ".meta", "config.json");
+      if (!existsSync(metaPath)) {
+        skipped.push({ slug, reason: "no .meta/config.json" });
         continue;
       }
-    } finally {
-      rmSync(proof, { recursive: true, force: true });
-    }
+      const meta = JSON.parse(await Bun.file(metaPath).text()) as MetaConfig;
+      const solutions = meta.files?.solution ?? [];
+      const tests = meta.files?.test ?? [];
+      const exemplars = meta.files?.exemplar ?? [];
+      if (solutions.length === 0 || tests.length === 0 || exemplars.length !== solutions.length) {
+        skipped.push({ slug, reason: "unusable .meta files layout" });
+        continue;
+      }
 
-    // Emit the fixture: stub + tests + README, never .meta (no cribs).
-    const fxDir = join(dest, slug);
-    rmSync(fxDir, { recursive: true, force: true });
-    const filesDir = join(fxDir, "files");
-    for (const f of [...solutions, ...tests]) {
-      mkdirSync(join(filesDir, dirname(f)), { recursive: true });
-      cpSync(join(src, f), join(filesDir, f));
-    }
-    if (existsSync(join(src, "README.md"))) {
+      // Check for README before proof step.
+      if (!existsSync(join(src, "README.md"))) {
+        skipped.push({ slug, reason: "no README.md" });
+        continue;
+      }
+
+      // Prove the oracle: exemplar over stub, then bun test must pass.
+      const proof = mkdtempSync(join(tmpdir(), `subagents-exemplar-${slug}-`));
+      try {
+        for (const t of tests) {
+          mkdirSync(join(proof, dirname(t)), { recursive: true });
+          cpSync(join(src, t), join(proof, t));
+        }
+        for (let i = 0; i < solutions.length; i++) {
+          mkdirSync(join(proof, dirname(solutions[i]!)), { recursive: true });
+          cpSync(join(src, exemplars[i]!), join(proof, solutions[i]!));
+        }
+        if (!(await bunTestPasses(proof))) {
+          skipped.push({ slug, reason: "exemplar fails under bun test (jest-compat gap)" });
+          continue;
+        }
+      } finally {
+        rmSync(proof, { recursive: true, force: true });
+      }
+
+      // Emit the fixture: stub + tests + README, never .meta (no cribs).
+      const fxDir = join(dest, slug);
+      rmSync(fxDir, { recursive: true, force: true });
+      const filesDir = join(fxDir, "files");
+      for (const f of [...solutions, ...tests]) {
+        mkdirSync(join(filesDir, dirname(f)), { recursive: true });
+        cpSync(join(src, f), join(filesDir, f));
+      }
       cpSync(join(src, "README.md"), join(filesDir, "README.md"));
+      writeFileSync(join(fxDir, "fixture.yaml"), [
+        `# Imported from Exercism (${slug}); oracle proven via exemplar. Not vendored — regenerate with import-exercism.`,
+        `task: "Implement the exercise described in README.md so the tests pass. The test file names the entry points."`,
+        `tools: [read_file, grep, list_dir, edit_file, write_file, run_checks]`,
+        `checks:`,
+        `  - { name: tests, cmd: "bun test" }`,
+        `oracle:`,
+        `  status: ok`,
+        `  checks_pass: true`,
+        ``,
+      ].join("\n"));
+      imported.push(slug);
+    } catch (e) {
+      skipped.push({ slug, reason: `unexpected error: ${e instanceof Error ? e.message : String(e)}` });
     }
-    writeFileSync(join(fxDir, "fixture.yaml"), [
-      `# Imported from Exercism (${slug}); oracle proven via exemplar. Not vendored — regenerate with import-exercism.`,
-      `task: "Implement the exercise described in README.md so the tests pass. The test file names the entry points."`,
-      `tools: [read_file, grep, list_dir, edit_file, write_file, run_checks]`,
-      `checks:`,
-      `  - { name: tests, cmd: "bun test" }`,
-      `oracle:`,
-      `  status: ok`,
-      `  checks_pass: true`,
-      ``,
-    ].join("\n"));
-    imported.push(slug);
   }
 
   return { imported, skipped };
