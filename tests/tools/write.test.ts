@@ -28,12 +28,12 @@ afterEach(() => {
 describe("write_file", () => {
   it("creates a new file and reports its line count", async () => {
     const r = await writeFile.run(
-      { path: "src/new.ts", content: "line 1\nline 2\n" },
+      { path: "src/new.ts", content: "const x = 1;\nconst y = 2;\n" },
       { root, session },
     );
     expect(r.truncated).toBe(false);
     expect(r.content).toBe("Wrote src/new.ts (2 lines).");
-    expect(await Bun.file(join(root, "src", "new.ts")).text()).toBe("line 1\nline 2\n");
+    expect(await Bun.file(join(root, "src", "new.ts")).text()).toBe("const x = 1;\nconst y = 2;\n");
   });
 
   it("creates parent directories for a nested new path", async () => {
@@ -92,5 +92,21 @@ describe("write_file", () => {
     const props = writeFile.schema.function.parameters.properties;
     expect(Object.keys(props).sort()).toEqual(["content", "path"]);
     expect(writeFile.schema.function.description).toContain("read");
+  });
+
+  it("appends a syntax note when written TS does not parse", async () => {
+    const r = await writeFile.run(
+      { path: "src/broken.ts", content: "export const x: number = ;\n" },
+      { root, session },
+    );
+    expect(r.content).toContain("[SYNTAX:");
+  });
+
+  it("skips syntax checking for non-JS/TS files", async () => {
+    const r = await writeFile.run(
+      { path: "notes.md", content: "not : valid ( ts — and that is fine\n" },
+      { root, session },
+    );
+    expect(r.content).not.toContain("[SYNTAX:");
   });
 });

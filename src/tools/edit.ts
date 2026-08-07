@@ -1,6 +1,7 @@
 import type { Tool, ToolContext, ToolResult } from "./types";
 import { safePath } from "./paths";
 import { toLines } from "./read";
+import { syntaxNote } from "./syntax";
 
 /** Lines of context shown around the first change in the confirmation snippet. */
 const SNIPPET_CONTEXT = 3;
@@ -108,7 +109,8 @@ export const editFile: Tool = {
     return {
       content:
         `Edited ${rel} (${count} replacement${count === 1 ? "" : "s"}).\n` +
-        snippet(updated, changeIndex),
+        snippet(updated, changeIndex) +
+        syntaxNote(path, updated),
       truncated: false,
     };
   },

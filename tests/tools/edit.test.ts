@@ -133,4 +133,23 @@ describe("edit_file", () => {
     expect(r.content).toContain("3\tconst c = 30;");
     expect(r.content).not.toContain("4\t");
   });
+
+  it("appends a syntax note when the edit breaks the file's parse", async () => {
+    await read("src/a.ts");
+    const r = await editFile.run(
+      { path: "src/a.ts", old_string: "const b = 2;", new_string: "const b = ;" },
+      { root, session },
+    );
+    expect(r.content).toContain("[SYNTAX:");
+    expect(r.content).toContain("fix before finishing");
+  });
+
+  it("appends no note for a clean edit", async () => {
+    await read("src/a.ts");
+    const r = await editFile.run(
+      { path: "src/a.ts", old_string: "const b = 2;", new_string: "const b = 20;" },
+      { root, session },
+    );
+    expect(r.content).not.toContain("[SYNTAX:");
+  });
 });

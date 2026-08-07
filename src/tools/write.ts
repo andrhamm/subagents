@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import type { Tool, ToolContext, ToolResult } from "./types";
 import { safeWritePath } from "./paths";
 import { toLines } from "./read";
+import { syntaxNote } from "./syntax";
 
 export const writeFile: Tool = {
   name: "write_file",
@@ -46,7 +47,7 @@ export const writeFile: Tool = {
 
     const lines = content === "" ? 0 : toLines(content).length;
     return {
-      content: `Wrote ${rel} (${lines} line${lines === 1 ? "" : "s"}).`,
+      content: `Wrote ${rel} (${lines} line${lines === 1 ? "" : "s"}).${syntaxNote(path, content)}`,
       truncated: false,
     };
   },
