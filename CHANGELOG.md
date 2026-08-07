@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/andrhamm/subagents/compare/subagents-v0.2.2...subagents-v0.3.0) (2026-08-07)
+
+
+### Features
+
+* **batch:** retry infra failures on same tier before escalating ([#6](https://github.com/andrhamm/subagents/issues/6)) ([c95e1cd](https://github.com/andrhamm/subagents/commit/c95e1cd5541bd10ba1598147a30250eedd126256))
+
 ## [0.2.2](https://github.com/andrhamm/subagents/compare/subagents-v0.2.1...subagents-v0.2.2) (2026-08-07)
 
 
