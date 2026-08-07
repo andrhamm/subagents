@@ -8,6 +8,7 @@ import { buildEnvelope, type Envelope, type WriteOutcome } from "./envelope";
 import { writeTranscript } from "./transcript";
 import { assertGitRepo, collectChanges, createWorktree, removeWorktree } from "./worktree";
 import { runChecks } from "./testgate";
+import { makeRunChecks, RUN_CHECKS_NAME } from "./tools/checks";
 
 export interface RunRequest {
   run: ResolvedRun;
@@ -33,7 +34,12 @@ export interface RunOutcome {
  */
 export async function executeRun(req: RunRequest): Promise<RunOutcome> {
   const { run } = req;
-  const tools = resolveTools(run.tools);
+  // run_checks is a per-run closure, not a registry entry: it must capture
+  // THIS run's checks and deadline. The static resolver never sees the name.
+  const tools = resolveTools(run.tools.filter((n) => n !== RUN_CHECKS_NAME));
+  if (run.tools.includes(RUN_CHECKS_NAME)) {
+    tools.push(makeRunChecks(run.checks, run.testTimeoutMs, req.deadlineAt));
+  }
   const writes = hasWriteTools(run.tools);
 
   const started = Date.now();
@@ -79,20 +85,23 @@ export async function executeRun(req: RunRequest): Promise<RunOutcome> {
           worktree: worktreeDir,
         };
         if (run.checks.length > 0) {
-          // The gate runs after the loop, so it draws from whatever's left of
-          // the caller's deadline, not a fresh budget of its own — a 120s
-          // default test_timeout_ms inside a 60s --deadline-secs would let
-          // the gate blow straight through the promise already made to the
-          // caller. Same principle as the per-request clamp in loop.ts; a 1s
-          // floor keeps a nearly-exhausted deadline from starving the gate
-          // outright.
-          const gateTimeoutMs = req.deadlineAt === undefined
-            ? run.testTimeoutMs
-            : Math.max(1000, Math.min(run.testTimeoutMs, req.deadlineAt - Date.now()));
-          const r = await runChecks(run.checks, worktreeDir, gateTimeoutMs, req.deadlineAt);
-          writeOutcome.test = { ran: r.ran, passed: r.passed, cmd: r.stages[r.stages.length - 1]?.cmd ?? "" };
-          testOutput = r.stages.map(s => s.output).join("\n");
-          // Task 4 carries per-stage detail into the envelope
+          const gate = await runChecks(
+            run.checks, worktreeDir, run.testTimeoutMs, req.deadlineAt);
+          const failing = gate.stages.find((s) => !s.passed);
+          // `test` stays the overall verdict — the batch predicates
+          // (rollup clean, needsEscalation) read it and must not care how
+          // many stages exist. `checks` carries the per-stage story.
+          writeOutcome.test = {
+            ran: gate.ran,
+            passed: gate.passed,
+            cmd: failing?.cmd ?? gate.stages[gate.stages.length - 1]?.cmd ?? run.checks[0]!.cmd,
+          };
+          writeOutcome.checks = gate.stages.map(
+            ({ name, passed, timedOut }) => ({ name, passed, timedOut }));
+          testOutput = gate.stages
+            .map((s) =>
+              `=== ${s.name}: ${s.passed ? "pass" : s.timedOut ? "timeout" : "fail"} ===\n${s.output}`)
+            .join("\n");
         }
       }
     } catch (e) {

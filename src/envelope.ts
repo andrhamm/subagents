@@ -17,6 +17,12 @@ export interface EnvelopeTest {
   cmd: string;
 }
 
+export interface CheckVerdict {
+  name: string;
+  passed: boolean;
+  timedOut: boolean;
+}
+
 export interface WriteOutcome {
   /** Root-relative changed paths, from git. Entry-capped at MAX_FILES_CHANGED in the envelope. */
   files: string[];
@@ -25,6 +31,7 @@ export interface WriteOutcome {
   /** The kept worktree's path — the diff lives there. */
   worktree: string;
   test?: EnvelopeTest;
+  checks?: CheckVerdict[];
 }
 
 export interface Envelope {
@@ -44,6 +51,7 @@ export interface Envelope {
   files_changed?: string[];
   diffstat?: string;
   test?: EnvelopeTest;
+  checks?: CheckVerdict[];
   worktree?: string;
 }
 
@@ -172,6 +180,7 @@ export function buildEnvelope(r: LoopResult, o: EnvelopeInputs): Envelope {
     envelope.diffstat = o.writes.diffstat;
     envelope.worktree = o.writes.worktree;
     if (o.writes.test) envelope.test = o.writes.test;
+    if (o.writes.checks) envelope.checks = o.writes.checks;
   }
 
   // Detail is supplementary — give it up first. Only reach into summary, the

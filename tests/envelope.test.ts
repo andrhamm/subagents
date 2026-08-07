@@ -353,6 +353,32 @@ describe("buildEnvelope", () => {
       // The bound must not be satisfied by gutting the field the caller reads.
       expect(e.summary.length).toBeGreaterThan(400);
     });
+
+    it("carries per-stage check verdicts alongside the overall test verdict", () => {
+      const e = buildEnvelope(result, {
+        wallSecs: 1, transcript: "/t", contextLimit: null,
+        writes: {
+          ...writes,
+          test: { ran: true, passed: false, cmd: "eslint src/" },
+          checks: [
+            { name: "tests", passed: true, timedOut: false },
+            { name: "style", passed: false, timedOut: false },
+          ],
+        },
+      });
+      expect(e.test).toEqual({ ran: true, passed: false, cmd: "eslint src/" });
+      expect(e.checks).toEqual([
+        { name: "tests", passed: true, timedOut: false },
+        { name: "style", passed: false, timedOut: false },
+      ]);
+    });
+
+    it("omits checks when the write outcome has none", () => {
+      const e = buildEnvelope(result, {
+        wallSecs: 1, transcript: "/t", contextLimit: null, writes,
+      });
+      expect(e.checks).toBeUndefined();
+    });
   });
 });
 
