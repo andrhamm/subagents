@@ -12,7 +12,7 @@ and editing files — and returns a small JSON envelope. Its transcript stays on
 disk; read it only when something needs checking.
 
 **What ships today:** the agentic loop above, config-driven providers and
-tiers, and these six tools:
+tiers, and these seven tools:
 
 - `read_file` — read a text file with line numbers, paged by offset/limit.
 - `glob` — find files by shell glob pattern.
@@ -20,6 +20,7 @@ tiers, and these six tools:
 - `list_dir` — list files under a directory, recursively.
 - `edit_file` — replace an exact substring in a file already read.
 - `write_file` — create a new file or overwrite one already read.
+- `run_checks` — run the profile's configured checks in order — no arguments.
 
 **What doesn't:** bash, MCP tools, and the benchmark harness are all planned
 but not present — do not tell a delegate to run a command, and don't
@@ -86,9 +87,11 @@ HEAD**. Three consequences you must plan around:
   `worktree`. Inspect `git -C <worktree> diff HEAD` (everything is staged),
   then apply what you accept — e.g. `git -C <worktree> diff HEAD | git apply`.
   Nothing touches your tree until you do this.
-- **Budget for the test gate.** `test_cmd` runs after the loop, inside the
-  worktree, up to `test_timeout_ms` (default 120s). Your shell timeout must
-  cover `--deadline-secs` *plus* the gate.
+- **Budget for the test gate.** `test_cmd` (sugar for a single `tests` stage)
+  or an ordered `checks:` list runs after the loop, inside the worktree,
+  stopping at the first failing stage. `test_timeout_ms` (default 120s) is a
+  **per-stage** budget, not a total — your shell timeout must cover
+  `--deadline-secs` *plus* every configured stage at that ceiling.
 
 Exit 0 now means the loop completed **and** the gate (if configured) passed.
 A failed gate exits 2 with `test.passed: false` — the worktree is kept, so a
@@ -105,15 +108,23 @@ failed-but-close diff is still yours to salvage or discard.
 
 ```json
 { "status": "ok", "summary": "...", "turns": 4, "wall_secs": 12.0,
-  "files_changed": ["src/rate-limit.ts"], "diffstat": "1 file changed, 1 insertion(+), 1 deletion(-)", "test": {"ran": true, "passed": true, "cmd": "bun test"}, "worktree": "/tmp/subagents-wt-…",
+  "files_changed": ["src/rate-limit.ts"], "diffstat": "1 file changed, 1 insertion(+), 1 deletion(-)", "test": {"ran": true, "passed": true, "cmd": "bun test"},
+  "checks": [{"name": "tests", "passed": true, "timedOut": false}], "worktree": "/tmp/subagents-wt-…",
   "context": {"peak_prompt_tokens": 21628, "limit": null, "pressure": null},
   "truncations": 0, "local_tokens": 21628, "transcript": "..." }
 ```
 
+`checks` is the per-stage detail (one entry per configured stage, in order,
+stopping at the first failure); `test` stays the overall verdict regardless
+of how many stages ran.
+
 `status` is one of `ok`, `max_turns`, `budget`, `deadline`, `error` — there is
-no `"stopped"`. Write runs include `files_changed`, `diffstat`, `test`, and
-`worktree`; read-only runs don't. `tools_omitted` doesn't exist yet (the MCP
-client hasn't landed). Check these before trusting `summary`:
+no `"stopped"`. Write runs include `files_changed`, `diffstat`, `test`,
+`checks`, and `worktree`; read-only runs don't. `checks` always has at least
+one entry once any gate ran — plain `test_cmd` desugars to a single `tests`
+stage, so it populates both fields, not just `test`. `tools_omitted` doesn't
+exist yet (the MCP client hasn't landed). Check these before trusting
+`summary`:
 
 - **`truncations` > 0** — the delegate was working blind on part of its input.
   Its coverage claims are unsafe. Re-run narrower, or escalate a tier.
@@ -126,9 +137,12 @@ client hasn't landed). Check these before trusting `summary`:
 - **`status: "deadline"` / `"max_turns"` / `"budget"`** — a partial result, not
   a failure. `summary` falls back to `detail` when the run stopped before
   producing prose (e.g. mid-tool-call), so it's never blank on a real stop.
-- **`test.passed: false`** — the delegate's diff breaks the configured test
-  command. The worktree is kept; read the transcript's `test_output` before
-  deciding whether to salvage or discard.
+- **`test.passed: false`** — the delegate's diff breaks a configured check.
+  Find which one in the envelope's `checks` array (`passed: false` or
+  `timedOut: true`), then read that stage's section in the transcript's
+  `test_output` — one `=== name: verdict ===` block per stage, in order — to
+  see its output before deciding whether to salvage or discard. The worktree
+  is kept either way.
 
 ## Trust rules
 
@@ -147,6 +161,9 @@ The delegate is reliable about specifics and unreliable about scope.
 - **Never apply a diff you haven't read.** The envelope's `files_changed` says
   where the delegate edited, not that the edits are right. Read the worktree
   diff; the test gate narrows the risk but a passing gate is not review.
+- **A diff that touches your spec test proved nothing.** Check
+  `files_changed` before reading anything else; if the test you authored is
+  in it, reject the run.
 
 ## Tiering
 
@@ -163,6 +180,24 @@ every model, and **every model held a single-file write loop** with the test
 gate passing — cheap-first applies to write jobs too, with `--escalate-tier`
 as the safety net. Re-running 20% of a corpus on the strong model costs far
 less than running all of it there.
+
+## TDD delegation: the test is the task
+
+For behavior changes, don't describe the change — hand over a failing test:
+
+1. **You** write the spec test and run it RED yourself; commit it (the
+   delegate sees your last commit — the RED state must be in it).
+2. Dispatch with the test as the gate:
+   `--task "tests/retry.test.ts::accepts HTTP-dates fails; make it pass" `
+   plus a per-job `test_cmd` (or `checks`) running exactly that test.
+3. The delegate (give it `run_checks`) watches itself go green in-loop;
+   the harness gate re-verifies after the loop.
+4. Accept mechanically: exit 0, AND `files_changed` does **not** include
+   your spec test (a delegate that edits the spec passed nothing), AND you
+   read the diff.
+
+Specifying behavior is judgment — keep it. Making a red test green is
+mechanical — delegate it, cheap tier first.
 
 ## Batch: many jobs, one envelope
 

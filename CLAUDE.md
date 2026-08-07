@@ -11,6 +11,11 @@ models. `src/` is authoritative over every doc when they disagree.
   batch: `bun src/cli.ts batch --jobs jobs.yaml`.
 - `subagents.yaml` is gitignored local config; `subagents.example.yaml` is the
   committed template.
+- A write profile's `checks` (ordered stages; `test_cmd` is sugar for one)
+  gate the worktree after the loop, and `run_checks` lets the delegate run
+  the same pipeline itself mid-loop. Both are new wire shapes — a tool
+  schema and an envelope field — so the live-verification rule below still
+  applies before either is trusted past the local suite's scripted backend.
 
 ## Hard constraints
 

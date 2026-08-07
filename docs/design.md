@@ -4,15 +4,21 @@ Delegate scoped coding tasks to any OpenAI-compatible model, so an orchestrating
 agent (Claude Code, or anything else) pays a small fixed context cost instead of
 reading everything itself.
 
-Status: the read-only loop, write tools, worktree isolation, test gate, and
-batch scheduling below ship and are verified against a live model — config,
-the agentic loop, all six tools (four read-only, two write), the deadline
-gate, worktree lifecycle, test execution, the envelope, and batch (model
-grouping, concurrency evidence, the progress file, the batch deadline, and
-escalation). The **Batch scheduling** section below describes shipped
-behavior, not a plan. The MCP client, the LM Studio adapter, `bash`, and the
-benchmark harness are designed here but not built. `src/` is authoritative
-over this document wherever they disagree. Not pushed anywhere yet.
+Status: the read-only loop, write tools, worktree isolation, the staged
+check gate, and batch scheduling below ship — config, the agentic loop, all
+seven tools (four read-only, two write, one check-runner), the deadline
+gate, worktree lifecycle, staged check execution, the envelope, and batch
+(model grouping, concurrency evidence, the progress file, the batch
+deadline, and escalation). The read-only loop, the write loop, and a
+single-stage test gate are verified against a live model
+([bench](bench/2026-08-06-lan-host.md)); the staged `checks:` pipeline and the
+`run_checks` tool are new since that bench and so far covered only by the
+local suite's scripted backend — not yet re-verified live, per this repo's
+own rule that a wire-shape change earns that check before it's trusted. The
+**Batch scheduling** section below describes shipped behavior, not a plan.
+The MCP client, the LM Studio adapter, `bash`, and the benchmark harness are
+designed here but not built. `src/` is authoritative over this document
+wherever they disagree. Not pushed anywhere yet.
 
 ## The problem
 
@@ -110,6 +116,7 @@ This is the load-bearing part of the whole design.
 | `grep` | Regex + optional glob filter. Returns `path:line:text`. Capped, with an explicit truncation notice naming how many matches were withheld. |
 | `glob` | Shell glob. Capped, explicit notice. |
 | `list_dir` | Recursive file list. Capped, explicit notice. |
+| `run_checks` | Zero-argument. Runs the profile's caller-authored `checks` (or `test_cmd` sugar) in order, stopping at the first failure. Capped at 3 calls per run — the post-loop gate re-verifies regardless. |
 | `bash` | (planned) Timeout, cwd confined to root, config allow/deny patterns. |
 
 **Termination:** an assistant message with content and no tool calls means done.
@@ -187,8 +194,10 @@ model/task/status/usage), not a `.jsonl` stream.
 
 This is the target shape; today's envelope (`src/envelope.ts`) has most of it:
 `status`, `summary`, `detail`, `turns`, `wall_secs`, `context`, `truncations`,
-`local_tokens`, `transcript`, `files_changed`, `diffstat`, `test`, and
-`worktree` now exist for write runs. `status` is one of `ok`, `max_turns`,
+`local_tokens`, `transcript`, `files_changed`, `diffstat`, `test`, `checks`,
+and `worktree` now exist for write runs — `checks` carries one verdict per
+configured stage (`name`, `passed`, `timedOut`); `test` stays the overall
+pass/fail regardless of stage count. `status` is one of `ok`, `max_turns`,
 `budget`, `deadline`, `error` — not `stopped`. `tools_omitted` still doesn't
 exist because the MCP client doesn't. And `context.limit`/`context.pressure`
 are `null` in every run today — nothing populates a context limit until the LM
@@ -235,10 +244,16 @@ Writes are the risk, and the delegate has no permission system of its own.
 
 - **Worktree isolation** default-on for any profile with write tools. The
   delegate edits an isolated tree; the orchestrator inspects a diff.
-- **Test gate** — the profile's `test_cmd` runs in the worktree after edits.
-  Failure is *reported, not reverted*: with worktree isolation the diff is the
-  deliverable, and a failed-but-close diff is salvageable by the orchestrator.
-  (Earlier drafts said "revert"; that predates worktree-by-default.)
+- **Test gate** — the profile's ordered `checks` (or `test_cmd` sugar for a
+  single stage) run in the worktree after edits, stopping at the first
+  failure. Failure is *reported, not reverted*: with worktree isolation the
+  diff is the deliverable, and a failed-but-close diff is salvageable by the
+  orchestrator. (Earlier drafts said "revert"; that predates
+  worktree-by-default.)
+- **Command text is caller-authored, never model-authored.** `checks[].cmd`
+  (or `test_cmd`) lives in config or a job spec, set by the orchestrator.
+  `run_checks` takes zero arguments — a delegate can pull the trigger the
+  caller loaded, but it never writes the command that runs.
 - **Never expose write-capable external tools.** An MCP server may offer
   destructive operations alongside search; the allowlist is explicit per tool,
   never per server.

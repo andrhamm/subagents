@@ -46,9 +46,16 @@ measured across six models from 4.6B up
   and `write_file` (create, or overwrite-after-read), confined to a git worktree
   detached at HEAD — the delegate never touches your working tree, and sees your
   last commit, not uncommitted changes
-- A test gate: a write profile's `test_cmd` runs in the worktree after the loop;
-  the envelope reports the verdict, and a failed gate keeps the worktree so the
-  diff can still be inspected
+- A staged check gate: a write profile's ordered `checks` (or `test_cmd` sugar
+  for a single stage) run in the worktree after the loop — tests, then style —
+  stop at first failure; the failing stage's output is the delegate's coaching.
+  The envelope reports every stage's verdict, and a failed gate keeps the
+  worktree so the diff can still be inspected. `run_checks` lets the delegate
+  pull the same pipeline itself mid-loop (zero arguments, capped at 3 calls —
+  the harness re-verifies once more after the loop regardless); every
+  `edit_file`/`write_file` call also gets a same-turn syntax check on
+  `.ts`/`.tsx`/`.js`/`.jsx` content, so a malformed edit surfaces immediately
+  instead of at the gate
 - `subagents batch`: N jobs from a YAML file, one rollup envelope. Jobs group
   by (provider, model) so each model loads once; `max_in_flight` caps
   per-provider fan-out; `--escalate-tier` re-runs failed or truncation-blind
