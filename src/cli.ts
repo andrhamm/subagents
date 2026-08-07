@@ -10,9 +10,13 @@ import { schedule, type BatchState, type ScheduleResult } from "./batch/schedule
 import { needsEscalation, mergeAttempts, type JobReport } from "./batch/escalate";
 import { buildRollup } from "./batch/rollup";
 import { writeProgress } from "./batch/progress";
+import { loadFixture } from "./bench/fixture";
+import { runFixture } from "./bench/run";
+import type { BenchRow } from "./bench/score";
 
 const USAGE = `subagents run --profile <name> --task <text> [options]
 subagents batch --jobs <file> [options]
+subagents bench --fixtures <glob> --tiers <a,b> [options]
 
 Options:
   --profile <name>     Profile from config. Required.
@@ -51,6 +55,29 @@ Exit codes:
   0  completed: status "ok" and the test gate (if configured) passed.
   2  ran, but status is not "ok" or the test gate failed — an envelope is
      still on stdout; read it before treating this as failure.
+  1  never started — nothing on stdout, the error is on stderr.
+
+Bench options:
+  --fixtures <glob>    Fixture directories to run. A literal directory or a
+                       glob of them. Default: bench/fixtures/*
+  --tiers <a,b>        Comma-separated tiers to run, each fixture on each.
+                       Required. Tier-major: every fixture on tier a, then
+                       every fixture on tier b — each model loads once.
+  --config <path>      As for run/batch.
+  --out <path>         Scored JSONL, one row per (fixture, tier). Default:
+                       bench/results.jsonl
+  --baseline <path>    Prior JSONL results. A fixture/tier that passed there
+                       and fails now is a regression.
+  --deadline-secs <n>  Per-fixture wall-clock budget, as for run.
+  --log-dir <dir>      Per-turn JSONL events, one file per (fixture, tier).
+
+Bench rows stream to stderr as they land; the run is fail-fast like batch —
+every fixture loads and every (fixture, tier) resolves against --config
+before anything runs. Exit codes:
+  0  ran: every row scored, pass or fail — an oracle failure alone is data,
+     not an error. The bench is measurement, not CI, until --baseline says
+     otherwise.
+  2  ran, and a --baseline row that passed now fails — named on stderr.
   1  never started — nothing on stdout, the error is on stderr.
 `;
 
@@ -96,6 +123,10 @@ const BATCH_STRING_OPTS = new Set([
   "jobs", "config", "root", "progress", "deadline-secs", "escalate-tier", "transcript-dir",
 ]);
 
+const BENCH_STRING_OPTS = new Set([
+  "fixtures", "tiers", "config", "out", "baseline", "deadline-secs", "log-dir",
+]);
+
 function findConfig(explicit?: string): string {
   if (explicit) {
     if (!existsSync(explicit)) throw new Error(`config not found: ${explicit}`);
@@ -128,6 +159,7 @@ async function main(argv: string[]): Promise<number> {
   }
   if (command === "run") return runMain(argv.slice(1));
   if (command === "batch") return batchMain(argv.slice(1));
+  if (command === "bench") return benchMain(argv.slice(1));
   process.stderr.write(`unknown command '${command}'\n\n${USAGE}`);
   return 1;
 }
@@ -363,6 +395,107 @@ async function batchMain(argv: string[]): Promise<number> {
   // Compact single line, like the run envelope — machine-read first.
   process.stdout.write(`${JSON.stringify(rollup)}\n`);
   return rollup.status === "ok" ? 0 : 2;
+}
+
+async function benchMain(argv: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: normalizeArgv(argv, BENCH_STRING_OPTS),
+    options: {
+      fixtures: { type: "string", default: "bench/fixtures/*" },
+      tiers: { type: "string" },
+      config: { type: "string" },
+      out: { type: "string", default: "bench/results.jsonl" },
+      baseline: { type: "string" },
+      "deadline-secs": { type: "string" },
+      "log-dir": { type: "string" },
+      help: { type: "boolean", short: "h" },
+    },
+    allowPositionals: false,
+  });
+  if (values.help) {
+    process.stdout.write(USAGE);
+    return 0;
+  }
+  if (!values.tiers) {
+    process.stderr.write(`missing required --tiers\n\n${USAGE}`);
+    return 1;
+  }
+  let deadlineSecs: number | undefined;
+  if (values["deadline-secs"] !== undefined) {
+    deadlineSecs = Number(values["deadline-secs"]);
+    if (!Number.isFinite(deadlineSecs) || deadlineSecs <= 0) {
+      process.stderr.write(`--deadline-secs must be a positive number\n`);
+      return 1;
+    }
+  }
+
+  // Fail-fast zone: load every fixture, resolve every (fixture, tier) pair,
+  // and read the baseline before anything runs — a typo'd tier discovered
+  // on fixture 12 of 12 wastes the first 11.
+  const cfg = parseConfig(await Bun.file(findConfig(values.config)).text());
+  // A literal directory path is a valid --fixtures value too — globs with
+  // no wildcard don't reliably match directories in every scanner.
+  const dirs = existsSync(join(values.fixtures, "fixture.yaml"))
+    ? [values.fixtures]
+    : [...new Bun.Glob(values.fixtures).scanSync({ onlyFiles: false })]
+        .filter((d) => existsSync(join(d, "fixture.yaml"))).sort();
+  if (dirs.length === 0) {
+    process.stderr.write(`no fixtures match ${values.fixtures}\n`);
+    return 1;
+  }
+  const fixtures = [];
+  for (const d of dirs) fixtures.push(await loadFixture(d));
+  const tiers = values.tiers.split(",").map((t) => t.trim()).filter(Boolean);
+  for (const fx of fixtures) {
+    for (const tier of tiers) {
+      resolveProfile(
+        { ...cfg, profiles: { ...cfg.profiles, __bench: {
+          tools: fx.tools, tier, ...(fx.checks.length ? { checks: fx.checks } : {}),
+        } } },
+        "__bench",
+      );
+    }
+  }
+  let baseline: Map<string, boolean> | undefined;
+  if (values.baseline !== undefined) {
+    baseline = new Map(
+      (await Bun.file(values.baseline).text()).trim().split("\n").filter(Boolean)
+        .map((l) => JSON.parse(l) as BenchRow)
+        .map((r) => [`${r.fixture}::${r.tier}`, r.oraclePass]),
+    );
+  }
+  if (values["log-dir"] !== undefined) mkdirSync(values["log-dir"], { recursive: true });
+  mkdirSync(resolve(values.out, ".."), { recursive: true });
+
+  const rows: BenchRow[] = [];
+  const regressions: string[] = [];
+  let outText = "";
+  for (const tier of tiers) {           // tier-major: each model loads once
+    for (const fx of fixtures) {
+      const { row } = await runFixture(fx, tier, cfg, {
+        ...(deadlineSecs !== undefined ? { deadlineSecs } : {}),
+        ...(values["log-dir"] !== undefined ? { logDir: values["log-dir"] } : {}),
+      });
+      rows.push(row);
+      outText += `${JSON.stringify(row)}\n`;
+      process.stderr.write(
+        `${row.fixture.padEnd(24)} ${row.tier.padEnd(10)} ` +
+        `${(row.oraclePass ? "PASS" : "FAIL").padEnd(5)} status=${row.status} ` +
+        `turns=${row.turns} wall=${row.wallSecs}s tokens=${row.tokens}` +
+        `${row.failures.length ? `\n  ${row.failures.join("\n  ")}` : ""}\n`);
+      const key = `${row.fixture}::${row.tier}`;
+      if (baseline?.get(key) === true && !row.oraclePass) {
+        regressions.push(`${row.fixture} (${row.tier})`);
+      }
+    }
+  }
+  await Bun.write(values.out, outText);
+
+  if (regressions.length > 0) {
+    process.stderr.write(`\nREGRESSION vs baseline: ${regressions.join(", ")}\n`);
+    return 2;
+  }
+  return 0;
 }
 
 try {
