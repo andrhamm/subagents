@@ -7,7 +7,7 @@ import { DEFAULT_SYSTEM_PROMPT, WRITE_SYSTEM_PROMPT_SUFFIX, runLoop } from "./lo
 import { buildEnvelope, type Envelope, type WriteOutcome } from "./envelope";
 import { writeTranscript } from "./transcript";
 import { assertGitRepo, collectChanges, createWorktree, removeWorktree } from "./worktree";
-import { runTestGate } from "./testgate";
+import { runChecks } from "./testgate";
 
 export interface RunRequest {
   run: ResolvedRun;
@@ -89,13 +89,10 @@ export async function executeRun(req: RunRequest): Promise<RunOutcome> {
           const gateTimeoutMs = req.deadlineAt === undefined
             ? run.testTimeoutMs
             : Math.max(1000, Math.min(run.testTimeoutMs, req.deadlineAt - Date.now()));
-          // Task 4 replaces this with the staged runner
-          const testCmd = run.checks[0]!.cmd;
-          const gate = await runTestGate(testCmd, worktreeDir, gateTimeoutMs);
-          writeOutcome.test = { ran: true, passed: gate.passed, cmd: testCmd };
-          testOutput = gate.timedOut
-            ? `[test gate timed out after ${gateTimeoutMs}ms]\n${gate.output}`
-            : gate.output;
+          const r = await runChecks(run.checks, worktreeDir, gateTimeoutMs, req.deadlineAt);
+          writeOutcome.test = { ran: r.ran, passed: r.passed, cmd: r.stages[r.stages.length - 1]?.cmd ?? "" };
+          testOutput = r.stages.map(s => s.output).join("\n");
+          // Task 4 carries per-stage detail into the envelope
         }
       }
     } catch (e) {

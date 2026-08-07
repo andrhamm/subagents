@@ -1,9 +1,27 @@
-import { markIfCut } from "./text";
+import type { CheckConfig } from "./config";
+import { markIfCut, markIfCutTail } from "./text";
 
 /** Cap on captured test output. Marked when cut — it feeds the transcript, not the envelope. */
 export const MAX_TEST_OUTPUT_CHARS = 10_000;
 
-export interface TestGateResult {
+export interface StageResult {
+  name: string;
+  passed: boolean;
+  timedOut: boolean;
+  cmd: string;
+  /** Combined stdout+stderr, mark-if-cut at MAX_TEST_OUTPUT_CHARS. */
+  output: string;
+}
+
+export interface ChecksResult {
+  /** False only for an empty pipeline — nothing ran, nothing to fail. */
+  ran: boolean;
+  passed: boolean;
+  /** Stages actually executed, in order. Stops after the first failure. */
+  stages: StageResult[];
+}
+
+interface TestGateResult {
   ran: true;
   passed: boolean;
   timedOut: boolean;
@@ -13,12 +31,11 @@ export interface TestGateResult {
 }
 
 /**
- * Run the caller's test command in `cwd` (the worktree). Harness-invoked
- * only — deliberately not a model-callable tool. A timeout counts as a
- * failure but is reported distinctly, because the remedy differs: raise
- * test_timeout_ms rather than fix the code.
+ * Run a single stage command in `cwd`. Private per-stage primitive spawned
+ * by runChecks. A timeout counts as a failure but is reported distinctly,
+ * because the remedy differs: raise timeoutMs rather than fix the code.
  */
-export async function runTestGate(
+async function runStage(
   cmd: string, cwd: string, timeoutMs: number,
 ): Promise<TestGateResult> {
   const proc = Bun.spawn(["sh", "-c", cmd], { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
@@ -62,4 +79,29 @@ export async function runTestGate(
     cmd,
     output: markIfCut(combined, MAX_TEST_OUTPUT_CHARS),
   };
+}
+
+/**
+ * Run the caller's ordered checks in `cwd`, stopping at the first failure —
+ * "lint only after tests pass" is stage order, not logic, and the failing
+ * stage's output is the delegate's coaching. Each stage clamps to the
+ * remaining deadline (floor 1s), same promise the loop keeps per request.
+ */
+export async function runChecks(
+  checks: CheckConfig[], cwd: string, timeoutMsPerStage: number, deadlineAt?: number,
+): Promise<ChecksResult> {
+  const stages: StageResult[] = [];
+  for (const check of checks) {
+    let budget = timeoutMsPerStage;
+    if (deadlineAt !== undefined) {
+      budget = Math.max(1000, Math.min(budget, deadlineAt - Date.now()));
+    }
+    const r = await runStage(check.cmd, cwd, budget);
+    stages.push({
+      name: check.name, passed: r.passed, timedOut: r.timedOut, cmd: check.cmd,
+      output: r.output,
+    });
+    if (!r.passed) return { ran: true, passed: false, stages };
+  }
+  return { ran: checks.length > 0, passed: true, stages };
 }
