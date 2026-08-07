@@ -1,5 +1,7 @@
 # subagents
 
+[![CI](https://github.com/andrhamm/subagents/actions/workflows/ci.yml/badge.svg)](https://github.com/andrhamm/subagents/actions/workflows/ci.yml)
+
 Delegate scoped coding tasks to any OpenAI-compatible model, so an orchestrating
 agent pays a small fixed context cost instead of reading everything itself.
 
