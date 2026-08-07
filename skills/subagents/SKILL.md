@@ -63,8 +63,9 @@ Real options (`subagents run --help` prints the same list):
 
 - `--profile <name>` — required. Selects a profile from config, which sets the
   tool allowlist and a default tier. A profile also carries `worktree`
-  (defaults to true when the profile has a write tool) and `test_cmd` — see
-  [Write profiles](#write-profiles) below.
+  (defaults to true when the profile has a write tool) and ordered `checks`
+  (`test_cmd` is sugar for a single stage) — see [Write profiles](#write-profiles)
+  below.
 - `--task <text>` — required. What the delegate should do.
 - `--root <dir>` — repo root the delegate is confined to (default: cwd).
 - `--tier <name>` — override the profile's default tier.

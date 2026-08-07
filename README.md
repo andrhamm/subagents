@@ -3,10 +3,12 @@
 Delegate scoped coding tasks to any OpenAI-compatible model, so an orchestrating
 agent pays a small fixed context cost instead of reading everything itself.
 
-> **Status: read-only loop, worktree-confined writes, and batch scheduling
-> ship; bash and MCP are planned.** `subagents run` and `subagents batch` work
-> today against any OpenAI-compatible endpoint, verified against a live model.
-> See [What ships today](#what-ships-today) below for the exact boundary.
+> **Status: read-only loop, worktree-confined writes, staged checks, and batch
+> scheduling ship; bash and MCP are planned.** `subagents run` and `subagents
+> batch` work today against any OpenAI-compatible endpoint; the read/write
+> loops and single-stage gate are verified against live models, the staged
+> `checks` pipeline so far against the test suite's scripted backend. See
+> [What ships today](#what-ships-today) below for the exact boundary.
 
 ## Why
 
