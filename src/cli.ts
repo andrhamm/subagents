@@ -22,6 +22,7 @@ Options:
   --config <path>      Config file. Default: ./subagents.yaml, then
                        ~/.config/subagents/config.yaml
   --transcript <path>  Where to write the transcript. Default: a temp file.
+  --log <path>         Per-turn JSONL events — turn, latency, tools, tokens
   --deadline-secs <n>  Wall-clock budget. Set it below your shell tool's timeout:
                        the loop then stops early with status "deadline" and a
                        valid envelope, instead of being killed with no output.
@@ -55,7 +56,7 @@ Exit codes:
 
 /** Every option whose value is an arbitrary string, as opposed to a boolean flag. */
 const STRING_OPTS = new Set([
-  "profile", "task", "root", "tier", "config", "transcript", "deadline-secs",
+  "profile", "task", "root", "tier", "config", "transcript", "deadline-secs", "log",
 ]);
 
 /**
@@ -142,6 +143,7 @@ async function runMain(argv: string[]): Promise<number> {
       config: { type: "string" },
       transcript: { type: "string" },
       "deadline-secs": { type: "string" },
+      log: { type: "string" },
       verbose: { type: "boolean", default: false },
       help: { type: "boolean", short: "h" },
     },
@@ -201,6 +203,7 @@ async function runMain(argv: string[]): Promise<number> {
     ...(process.env["SUBAGENTS_API_KEY"]
       ? { apiKey: process.env["SUBAGENTS_API_KEY"] }
       : {}),
+    ...(values.log ? { logPath: values.log } : {}),
     ...(values.verbose
       ? {
           onTurn: (turn: number, secs: number, names: string[]) =>
@@ -298,6 +301,7 @@ async function batchMain(argv: string[]): Promise<number> {
       task: job.spec.task,
       root: job.root,
       transcriptPath: join(transcriptDir, `${job.id}${suffix}.json`),
+      logPath: join(transcriptDir, `${job.id}${suffix}.log.jsonl`),
       ...(deadlineAt === undefined ? {} : { deadlineAt }),
       ...(process.env["SUBAGENTS_API_KEY"]
         ? { apiKey: process.env["SUBAGENTS_API_KEY"] }

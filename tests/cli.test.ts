@@ -254,4 +254,22 @@ profiles:
     const env = JSON.parse(out);
     expect(env.status).toBeTruthy();
   });
+
+  it("writes parseable per-turn JSONL to --log, tokens summing to the envelope", async () => {
+    const logPath = join(root, "run.log.jsonl");
+    const proc = Bun.spawn(
+      ["bun", CLI, "run", "--profile", "digest", "--task", "where is the answer?",
+       "--root", root, "--config", join(root, "subagents.yaml"), "--log", logPath],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const out = await new Response(proc.stdout).text();
+    expect(await proc.exited).toBe(0);
+    const env = JSON.parse(out);
+    const events = (await Bun.file(logPath).text()).trim().split("\n").map((l) => JSON.parse(l));
+    expect(events).toHaveLength(env.turns);
+    const logged = events.reduce(
+      (s, e) => s + (e.promptTokens ?? 0) + (e.completionTokens ?? 0), 0);
+    expect(logged).toBe(env.local_tokens);
+    expect(typeof events[0].ts).toBe("number");
+  });
 });

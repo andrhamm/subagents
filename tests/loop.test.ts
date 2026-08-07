@@ -615,6 +615,53 @@ describe("runLoop session", () => {
   });
 });
 
+describe("runLoop events", () => {
+  it("emits one event per turn with tool and token detail", async () => {
+    const events: import("../src/loop").TurnEvent[] = [];
+    const backend = new ScriptedBackend([
+      assistant(null, [["c1", "t", '{"a":1}']]),
+      assistant("done"),
+    ]);
+    await runLoop({
+      ...base, backend,
+      tools: [fakeTool("t", { content: "0123456789", truncated: true })],
+      onEvent: (e) => events.push(e),
+    });
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({
+      turn: 1,
+      toolCalls: [{ name: "t", argsChars: 7, resultChars: 10, truncated: true }],
+      promptTokens: 100,
+      completionTokens: 10,
+    });
+    expect(events[0]!.latencyMs).toBeGreaterThanOrEqual(events[0]!.backendMs);
+    expect(events[1]!.toolCalls).toEqual([]);
+    expect(events[1]!.finishReason).toBe("stop");
+  });
+
+  it("keeps onTurn working, derived from the same emission", async () => {
+    const turns: number[] = [];
+    const events: number[] = [];
+    const backend = new ScriptedBackend([assistant("done")]);
+    await runLoop({
+      ...base, backend, tools: [],
+      onTurn: (t) => turns.push(t),
+      onEvent: (e) => events.push(e.turn),
+    });
+    expect(turns).toEqual([1]);
+    expect(events).toEqual([1]);
+  });
+
+  it("survives a throwing onEvent — observers never cost the run", async () => {
+    const backend = new ScriptedBackend([assistant("done")]);
+    const r = await runLoop({
+      ...base, backend, tools: [],
+      onEvent: () => { throw new Error("observer bug"); },
+    });
+    expect(r.status).toBe("ok");
+  });
+});
+
 describe("runLoop wire echo", () => {
   // Found against a live LM Studio server: the scripted response's
   // tool_calls omit `type` (as a real wire response may), and the loop's

@@ -1,6 +1,7 @@
+import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ResolvedRun } from "./config";
-import type { LoopOptions } from "./loop";
+import type { LoopOptions, TurnEvent } from "./loop";
 import { OpenAIBackend } from "./backends/base";
 import { hasWriteTools, resolveTools } from "./tools/registry";
 import { DEFAULT_SYSTEM_PROMPT, WRITE_SYSTEM_PROMPT_SUFFIX, runLoop } from "./loop";
@@ -19,6 +20,7 @@ export interface RunRequest {
   deadlineAt?: number;
   apiKey?: string;
   onTurn?: LoopOptions["onTurn"];
+  logPath?: string;
 }
 
 export interface RunOutcome {
@@ -69,6 +71,16 @@ export async function executeRun(req: RunRequest): Promise<RunOutcome> {
       : {}),
     ...(req.deadlineAt === undefined ? {} : { deadlineAt: req.deadlineAt }),
     ...(req.onTurn ? { onTurn: req.onTurn } : {}),
+    ...(req.logPath !== undefined
+      ? {
+          onEvent: (e: TurnEvent) => {
+            // Advisory, like every observer: a full disk must not cost the run.
+            try {
+              appendFileSync(req.logPath!, `${JSON.stringify({ ts: Date.now(), ...e })}\n`);
+            } catch { /* swallowed deliberately */ }
+          },
+        }
+      : {}),
   });
 
   let writeOutcome: WriteOutcome | undefined;

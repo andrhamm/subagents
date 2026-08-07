@@ -26,6 +26,7 @@ export interface LoopOptions {
   /** Override the wrap-up reserve. */
   wrapupReserveMs?: number;
   onTurn?: (turn: number, secs: number, toolNames: string[]) => void;
+  onEvent?: (e: TurnEvent) => void;
 }
 
 export interface LoopResult {
@@ -36,6 +37,24 @@ export interface LoopResult {
   messages: Message[];
   usage: Usage[];
   truncations: number;
+}
+
+export interface ToolCallEvent {
+  name: string;
+  argsChars: number;
+  resultChars: number;
+  truncated: boolean;
+}
+
+export interface TurnEvent {
+  turn: number;
+  /** Full turn: backend round trip plus every tool dispatched. */
+  latencyMs: number;
+  backendMs: number;
+  toolCalls: ToolCallEvent[];
+  promptTokens?: number;
+  completionTokens?: number;
+  finishReason?: string;
 }
 
 // Re-sent every turn, so every word is paid per-turn and adds latency. Five
@@ -53,13 +72,10 @@ export const DEFAULT_SYSTEM_PROMPT =
 export const WRITE_SYSTEM_PROMPT_SUFFIX =
   "\nread_file a file before editing it. Make the smallest change that satisfies the task.";
 
-/** A broken progress callback (e.g. EPIPE from a closed pipe) must not cost the caller its result. */
-function safeOnTurn(o: LoopOptions, turn: number, elapsedMs: number, toolNames: string[]): void {
-  try {
-    o.onTurn?.(turn, elapsedMs / 1000, toolNames);
-  } catch {
-    // swallowed deliberately
-  }
+/** Observers are advisory: a throwing callback must never cost the caller its result. */
+function emitTurn(o: LoopOptions, e: TurnEvent): void {
+  try { o.onEvent?.(e); } catch { /* swallowed deliberately */ }
+  try { o.onTurn?.(e.turn, e.latencyMs / 1000, e.toolCalls.map((t) => t.name)); } catch { /* ditto */ }
 }
 
 /**
@@ -165,6 +181,7 @@ export async function runLoop(o: LoopOptions): Promise<LoopResult> {
     } catch (e) {
       return done("error", "", e instanceof Error ? e.message : String(e));
     }
+    const backendMs = Date.now() - started;
 
     // The fifth level of the same defect as malformed `choices`,
     // `choice.message`, and `call.function` below: a 200-OK body that parses
@@ -202,11 +219,18 @@ export async function runLoop(o: LoopOptions): Promise<LoopResult> {
     // rather than crashing on `.map`/`.function.name` a turn later.
     const rawCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
     const calls = rawCalls.map((c, i) => normalizeToolCall(c, turns, i));
-    const toolNames = calls.map((c) => c.function.name);
 
     if (choice.finish_reason === "length") {
       worstTurnMs = Math.max(worstTurnMs, Date.now() - started);
-      safeOnTurn(o, turns, Date.now() - started, toolNames);
+      emitTurn(o, {
+        turn: turns,
+        latencyMs: Date.now() - started,
+        backendMs,
+        toolCalls: [],
+        promptTokens: res.usage?.prompt_tokens,
+        completionTokens: res.usage?.completion_tokens,
+        finishReason: choice.finish_reason,
+      });
       messages.push({ role: "assistant", content: msg.content ?? "" });
       return done(
         "budget", msg.content ?? "",
@@ -218,7 +242,15 @@ export async function runLoop(o: LoopOptions): Promise<LoopResult> {
     // Completion: the agent stopped asking for tools. No terminator tool needed.
     if (calls.length === 0) {
       worstTurnMs = Math.max(worstTurnMs, Date.now() - started);
-      safeOnTurn(o, turns, Date.now() - started, toolNames);
+      emitTurn(o, {
+        turn: turns,
+        latencyMs: Date.now() - started,
+        backendMs,
+        toolCalls: [],
+        promptTokens: res.usage?.prompt_tokens,
+        completionTokens: res.usage?.completion_tokens,
+        finishReason: choice.finish_reason,
+      });
       const text = msg.content ?? "";
       messages.push({ role: "assistant", content: text });
       if (!text) {
@@ -237,20 +269,32 @@ export async function runLoop(o: LoopOptions): Promise<LoopResult> {
 
     messages.push({ role: "assistant", content: msg.content ?? "", tool_calls: calls });
 
+    const toolEvents: ToolCallEvent[] = [];
     for (const call of calls) {
-      messages.push({
-        role: "tool",
-        tool_call_id: call.id,
-        content: await dispatch(call.function.name, call.function.arguments, byName, o,
-          session, () => { truncations++; }),
+      const r = await dispatch(call.function.name, call.function.arguments, byName, o, session);
+      if (r.truncated) truncations++;
+      toolEvents.push({
+        name: call.function.name,
+        argsChars: call.function.arguments.length,
+        resultChars: r.content.length,
+        truncated: r.truncated,
       });
+      messages.push({ role: "tool", tool_call_id: call.id, content: r.content });
     }
 
     // The full iteration cost — backend latency plus every tool call just
     // dispatched — is what the next turn's gate needs, not just the chat
     // round trip measured above.
     worstTurnMs = Math.max(worstTurnMs, Date.now() - started);
-    safeOnTurn(o, turns, Date.now() - started, toolNames);
+    emitTurn(o, {
+      turn: turns,
+      latencyMs: Date.now() - started,
+      backendMs,
+      toolCalls: toolEvents,
+      promptTokens: res.usage?.prompt_tokens,
+      completionTokens: res.usage?.completion_tokens,
+      finishReason: choice.finish_reason,
+    });
   }
 
   return done(
@@ -265,25 +309,29 @@ async function dispatch(
   byName: Map<string, Tool>,
   o: LoopOptions,
   session: RunSession,
-  onTruncated: () => void,
-): Promise<string> {
+): Promise<{ content: string; truncated: boolean }> {
   const tool = byName.get(name);
   if (!tool) {
-    return `ERROR: unknown tool '${name}'. Available: ${[...byName.keys()].join(", ") || "(none)"}`;
+    return {
+      content: `ERROR: unknown tool '${name}'. Available: ${[...byName.keys()].join(", ") || "(none)"}`,
+      truncated: false,
+    };
   }
   let args: Record<string, unknown>;
   try {
     args = JSON.parse(rawArgs || "{}") as Record<string, unknown>;
   } catch (e) {
-    return `ERROR: arguments were not valid JSON (${
-      e instanceof Error ? e.message : String(e)
-    }). Retry this call with valid JSON.`;
+    return {
+      content: `ERROR: arguments were not valid JSON (${
+        e instanceof Error ? e.message : String(e)
+      }). Retry this call with valid JSON.`,
+      truncated: false,
+    };
   }
   try {
     const result = await tool.run(args, { root: o.root, session });
-    if (result.truncated) onTruncated();
-    return result.content;
+    return { content: result.content, truncated: result.truncated };
   } catch (e) {
-    return `ERROR: ${e instanceof Error ? e.message : String(e)}`;
+    return { content: `ERROR: ${e instanceof Error ? e.message : String(e)}`, truncated: false };
   }
 }
