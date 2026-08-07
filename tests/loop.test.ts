@@ -512,6 +512,58 @@ describe("runLoop capability gate", () => {
     const r = await runLoop({ ...base, model: "some-incapable-model", backend, tools: [] });
     expect(r.status).toBe("error");
     expect(r.detail).toContain("some-incapable-model");
+    expect(r.detail).toContain("cannot call tools");
+  });
+
+  // Observed live 2026-08-07: gemma-4-e2b called tools on turns 1–10, then
+  // emitted an empty stop turn after repeated edit failures — and the
+  // envelope blamed tool-use capability. A model that already called tools
+  // demonstrably can call tools; blaming capability sends the operator
+  // debugging the wrong thing. The empty turn after real tool use means the
+  // model gave up on the task.
+  it("blames task difficulty, not capability, when prior turns did call tools", async () => {
+    const backend = new ScriptedBackend([
+      assistant(null, [["c1", "t", "{}"]]),
+      assistant(null),
+    ]);
+    const tools = [fakeTool("t", { content: "fine", truncated: false })];
+    const r = await runLoop({ ...base, backend, tools });
+    expect(r.status).toBe("error");
+    expect(r.detail).not.toContain("cannot call tools");
+    expect(r.detail).toContain("stopped emitting after 2 turns");
+    expect(r.detail).toContain("escalating");
+  });
+
+  it("counts the trailing failed tool attempts in the give-up diagnosis", async () => {
+    const backend = new ScriptedBackend([
+      assistant(null, [["c1", "ok", "{}"]]),
+      assistant(null, [["c2", "bad", "{}"]]),
+      assistant(null, [["c3", "bad", "{}"]]),
+      assistant(null),
+    ]);
+    const tools = [
+      fakeTool("ok", { content: "fine", truncated: false }),
+      fakeTool("bad", new Error("old_string not found")),
+    ];
+    const r = await runLoop({ ...base, backend, tools });
+    expect(r.status).toBe("error");
+    expect(r.detail).toContain("last 2 tool attempts failed");
+  });
+
+  it("omits the failed-attempt note when the trailing tool call succeeded", async () => {
+    const backend = new ScriptedBackend([
+      assistant(null, [["c1", "bad", "{}"]]),
+      assistant(null, [["c2", "ok", "{}"]]),
+      assistant(null),
+    ]);
+    const tools = [
+      fakeTool("ok", { content: "fine", truncated: false }),
+      fakeTool("bad", new Error("boom")),
+    ];
+    const r = await runLoop({ ...base, backend, tools });
+    expect(r.status).toBe("error");
+    expect(r.detail).not.toContain("failed");
+    expect(r.detail).toContain("stopped emitting after 3 turns");
   });
 
   it("still reports ok when content is present alongside no tool calls", async () => {

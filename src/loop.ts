@@ -140,6 +140,14 @@ export async function runLoop(o: LoopOptions): Promise<LoopResult> {
    */
   let worstTurnMs = 0;
 
+  // Diagnosis state for the empty-final-turn error below. A model that
+  // already called tools demonstrably can call tools, so an empty turn after
+  // real tool use is the model giving up on the task, not a capability gap
+  // (observed live 2026-08-07: gemma-4-e2b called tools for 10 turns, then
+  // emitted an empty stop turn after repeated edit failures).
+  let anyToolCalls = false;
+  let trailingFailedCalls = 0;
+
   while (turns < o.maxTurns) {
     if (o.deadlineAt !== undefined) {
       const remaining = o.deadlineAt - Date.now();
@@ -254,9 +262,22 @@ export async function runLoop(o: LoopOptions): Promise<LoopResult> {
       const text = msg.content ?? "";
       messages.push({ role: "assistant", content: text });
       if (!text) {
-        // No tool calls and no content is exactly the shape a model that
-        // cannot call tools produces — reporting it as `ok` would hide a
-        // capability problem behind an empty, silently "successful" answer.
+        // An empty turn is still an error either way — reporting it as `ok`
+        // would hide the problem behind a silently "successful" answer — but
+        // the diagnosis depends on history. With no tool call ever, this is
+        // exactly the shape a model that cannot call tools produces. After
+        // real tool use, capability is proven and the model gave up instead.
+        if (anyToolCalls) {
+          const failedNote = trailingFailedCalls > 0
+            ? ` (last ${trailingFailedCalls} tool attempt${trailingFailedCalls === 1 ? "" : "s"} failed)`
+            : "";
+          return done(
+            "error", "",
+            `model '${o.model}' stopped emitting after ${turns} turns${failedNote} — ` +
+              "likely task difficulty, not a tool-use capability problem; consider " +
+              "escalating to a stronger tier.",
+          );
+        }
         return done(
           "error", "",
           `model '${o.model}' returned no tool calls and no content on turn ${turns} — ` +
@@ -269,10 +290,16 @@ export async function runLoop(o: LoopOptions): Promise<LoopResult> {
 
     messages.push({ role: "assistant", content: msg.content ?? "", tool_calls: calls });
 
+    anyToolCalls = true;
     const toolEvents: ToolCallEvent[] = [];
     for (const call of calls) {
       const r = await dispatch(call.function.name, call.function.arguments, byName, o, session);
       if (r.truncated) truncations++;
+      // `ERROR:` is dispatch's own failure prefix (unknown tool, bad JSON,
+      // tool throw) — a heuristic, since nothing stops a tool's real output
+      // from starting with it, but it only shades the diagnosis wording.
+      if (r.content.startsWith("ERROR:")) trailingFailedCalls++;
+      else trailingFailedCalls = 0;
       toolEvents.push({
         name: call.function.name,
         argsChars: call.function.arguments.length,
