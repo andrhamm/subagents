@@ -22,9 +22,14 @@ tiers, and these seven tools:
 - `write_file` — create a new file or overwrite one already read.
 - `run_checks` — run the profile's configured checks in order — no arguments.
 
-**What doesn't:** bash, MCP tools, and the benchmark harness are all planned
-but not present — do not tell a delegate to run a command, and don't
-configure a profile expecting one to.
+**What doesn't:** bash and MCP tools are planned but not present — do not tell
+a delegate to run a command, and don't configure a profile expecting one to.
+
+**Measuring the harness:** `subagents bench` scores any model against
+deterministic fixtures with oracles, baseline regression gating, and per-turn
+logs. The suite measures harness deltas, not model capability — public exercises
+contaminate absolute scores, so treat them as inflated (read the caveat in
+[bench/README.md](../../bench/README.md)).
 
 ## When delegation actually pays
 

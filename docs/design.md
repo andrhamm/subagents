@@ -277,7 +277,10 @@ Writes are the risk, and the delegate has no permission system of its own.
 A first-class feature, not an afterthought: score any model on *agentic loop*
 tasks against deterministic ground truth. Published benchmarks measure one-shot
 extraction; nothing measures whether a model can hold a 12-turn tool loop, which
-is the only thing that matters here.
+is the only thing that matters here. **This suite measures the harness, not the
+models** (see [bench/README.md](bench/README.md) for the one rule): relative
+deltas across harness variants stay valid; absolute scores are contaminated
+because public exercises live in every model's training data.
 
 Each fixture is a directory: `fixture.yaml` (task, tools, optional ordered
 `checks`, oracle) plus `files/` — the repo the delegate works in, copied
