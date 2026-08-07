@@ -1,0 +1,9 @@
+# Write-loop fixture: one-line typo fix, gated. The oracle is the gate.
+task: "greet() in src/greet.ts returns 'Helo, ...' — a typo. Fix it so it returns 'Hello, ...'. Change nothing else."
+tools: [read_file, grep, edit_file, run_checks]
+checks:
+  - { name: tests, cmd: "grep -q 'Hello' src/greet.ts" }
+oracle:
+  status: ok
+  checks_pass: true
+  files_changed: ["src/greet.ts"]

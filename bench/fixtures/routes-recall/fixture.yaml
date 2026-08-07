@@ -1,0 +1,8 @@
+# Read-loop fixture ported from the 2026-08-06 lan-host bench. Ground truth by
+# grep: lines 9, 10, 12 validate. The must-not list is the fabrication trap.
+task: "List every route in src/routes.ts that validates its request body, with the exact line number of each."
+tools: [read_file, grep, glob, list_dir]
+oracle:
+  status: ok
+  summary_must_match: ["\\b9\\b", "\\b10\\b", "\\b12\\b"]
+  summary_must_not_match: ["[Ll]ine\\s*8\\b", "[Ll]ine\\s*11\\b", "[Ll]ine\\s*13\\b"]
