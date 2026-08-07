@@ -1,0 +1,27 @@
+{
+  "name": "subagents",
+  "version": "0.1.0",
+  "description": "Delegate scoped coding tasks to any OpenAI-compatible model",
+  "license": "MIT",
+  "repository": "https://github.com/andrhamm/subagents",
+  "type": "module",
+  "module": "src/cli.ts",
+  "bin": {
+    "subagents": "src/cli.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "build": "bun build src/cli.ts --compile --outfile dist/subagents"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  },
+  "homepage": "https://github.com/andrhamm/subagents#readme",
+  "bugs": "https://github.com/andrhamm/subagents/issues",
+  "author": "Andrew Hammond",
+  "engines": {
+    "bun": ">=1.3.0"
+  }
+}

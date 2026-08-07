@@ -1,10 +1,17 @@
 # subagents
 
+[![CI](https://github.com/andrhamm/subagents/actions/workflows/ci.yml/badge.svg)](https://github.com/andrhamm/subagents/actions/workflows/ci.yml)
+
 Delegate scoped coding tasks to any OpenAI-compatible model, so an orchestrating
 agent pays a small fixed context cost instead of reading everything itself.
 
-> **Status: design phase.** This repo currently contains the design, the Claude
-> Code plugin scaffolding, and the usage skill. **The CLI is not implemented yet.**
+> **Status: read-only loop, worktree-confined writes, staged checks, batch
+> scheduling, and deterministic fixture benchmarking ship; bash and MCP are
+> planned.** `subagents run`, `subagents batch`, and `subagents bench` work
+> today, all verified against live models — including the staged `checks`
+> pipeline with a delegate calling `run_checks` mid-loop, and the bench suite
+> run end to end. See [What ships today](#what-ships-today) below for the
+> exact boundary.
 
 ## Why
 
@@ -14,24 +21,80 @@ frontier rates. A local or self-hosted model can absorb that input for free.
 
 The naive workaround — piping a local model's output back through the orchestrator
 — costs *more* context than doing the work directly. So instead: a CLI that runs
-the entire agentic loop against a configured model, reads and edits files itself,
-and returns a small JSON envelope. The transcript lands on disk and is read only
-when something fails.
+the entire agentic loop against a configured model, reads and writes files itself
+(writes confined to a worktree, see below), and returns a small JSON envelope. The
+transcript lands on disk and is read only when something fails.
 
 Measured on a repo-wide triage during design: **165,362 tokens burned on the
-delegate, ~850 returned to the caller** — about 195:1.
+delegate, ~850 returned to the caller** — about 195:1. On the write side, a
+delegated one-line fix burns ~2,600–3,500 delegate tokens and returns a
+~600-character envelope carrying the diffstat and the test-gate verdict —
+measured across six models from 4.6B up
+([bench](docs/bench/2026-08-06-lan-host.md)).
 
-## What it will do
+## What ships today
 
-- Run an agentic tool-calling loop against any OpenAI-compatible endpoint —
-  LM Studio, Ollama, vLLM, llama.cpp server, LiteLLM, OpenRouter
-- Give the delegate Claude-Code-faithful tools: line-numbered paged reads,
-  uniqueness-checked edits, grep, glob, bash
-- Optional external tools over MCP, under a strict read-only allowlist
-- Isolate writes in a git worktree behind a test gate
-- Return a small envelope: status, summary, diffstat, test result, context
-  pressure, truncation count, transcript path
-- Benchmark any model on *agentic loop* tasks against deterministic ground truth
+- An agentic tool-calling loop against any OpenAI-compatible endpoint —
+  LM Studio, Ollama, vLLM, llama.cpp server, LiteLLM, OpenRouter — via
+  `subagents run`
+- Config with providers, tiers, sampling presets, and per-profile tool
+  allowlists
+- Claude-Code-faithful read-only tools: line-numbered paged reads (`read_file`),
+  deterministic search (`grep`, `glob`, `list_dir`) with full omission
+  reporting for every cap and exclusion, never a silent one
+- A deadline gate: pass `--deadline-secs` and the loop stops before a turn
+  that would overrun it, returning a partial result instead of being killed
+- A small, size-bounded JSON envelope (status, summary, turns, wall time,
+  context usage, truncation count, transcript path) plus the full transcript
+  on disk
+- Write support: `edit_file` (exact-substring replace, unique match, read-before-edit)
+  and `write_file` (create, or overwrite-after-read), confined to a git worktree
+  detached at HEAD — the delegate never touches your working tree, and sees your
+  last commit, not uncommitted changes
+- A staged check gate: a write profile's ordered `checks` (or `test_cmd` sugar
+  for a single stage) run in the worktree after the loop — tests, then style —
+  stop at first failure; the failing stage's output is the delegate's coaching.
+  The envelope reports every stage's verdict, and a failed gate keeps the
+  worktree so the diff can still be inspected. `run_checks` lets the delegate
+  pull the same pipeline itself mid-loop (zero arguments, capped at 3 calls —
+  the harness re-verifies once more after the loop regardless); every
+  `edit_file`/`write_file` call also gets a same-turn syntax check on
+  `.ts`/`.tsx`/`.js`/`.jsx` content, so a malformed edit surfaces immediately
+  instead of at the gate
+- `subagents batch`: N jobs from a YAML file, one rollup envelope. Jobs group
+  by (provider, model) so each model loads once; `max_in_flight` caps
+  per-provider fan-out; `--escalate-tier` re-runs failed or truncation-blind
+  jobs on a stronger tier; `--progress` maintains a pollable state file; a
+  batch deadline stops *starting* jobs and names the ones that never ran
+- `subagents bench`: deterministic fixture suite with oracles, baseline
+  regression gating, per-turn logs; measures harness deltas, not model
+  capability (see [bench/README.md](bench/README.md))
+
+## What's planned, not built
+
+- `bash` as a model-callable tool (the harness-run test gate exists; arbitrary
+  commands do not)
+- An MCP client for external tools
+- The LM Studio adapter (capability probe, `context.limit`/`context.pressure`
+  — both are `null` today because nothing populates them yet)
+
+## Which model should I run?
+
+**→ [Recommended Models by Hardware Profile](https://github.com/andrhamm/subagents/wiki/Recommended-Models)**
+
+Model picks for hardware from ~8 GB up to 80 GB+, measured throughput and accuracy
+figures, per-family sampling parameters, and the operating gotchas that cost the most
+debugging time.
+
+The short version: the model **must support tool calling** or it will loop uselessly
+producing nothing — and on one installation surveyed, 11 of 27 installed models could
+not, including several well-regarded coding models whose chat templates predate the
+feature. Check first:
+
+```bash
+curl -s http://localhost:1234/api/v0/models \
+  | jq -r '.data[] | select(.capabilities // [] | index("tool_use")) | .id'
+```
 
 ## Design principle
 
@@ -46,7 +109,7 @@ that fixed, a 4.6B model produced exact line citations and fabricated none.
 See [docs/design.md](docs/design.md) for the full design and the measurements
 behind it.
 
-## Install (once implemented)
+## Install (once published)
 
 ```
 /plugin marketplace add andrhamm/subagents

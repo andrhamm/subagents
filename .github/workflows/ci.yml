@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      # The whole suite runs against scripted local backends (Bun.serve on
+      # localhost) and throwaway git repos — no model, no network, no
+      # secrets needed. Only wire-shape live verification (see
+      # CONTRIBUTING.md) requires a real LLM server, and that stays a
+      # manual pre-merge step.
+      - run: bun test

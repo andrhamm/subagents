@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Model measurement contribution
+    url: https://github.com/andrhamm/subagents/blob/main/bench/README.md
+    about: Run the bench suite and share comparable rows — see the wiki's Recommended-Models page for what a useful report contains.

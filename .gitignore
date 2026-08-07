@@ -3,3 +3,7 @@ node_modules/
 .transcripts/
 dist/
 .DS_Store
+.superpowers/
+subagents.yaml
+bench/results.jsonl
+bench/fixtures-exercism/

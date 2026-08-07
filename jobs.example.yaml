@@ -1,0 +1,7 @@
+# subagents batch --jobs jobs.yaml [--escalate-tier strong] [--progress progress.json]
+# Every job resolves against subagents.yaml before anything runs.
+# id defaults to j1..jN; root defaults to --root (or cwd); tier overrides the profile's.
+jobs:
+  - { id: routes,  profile: digest, task: "List every route that validates its request body, with file:line." }
+  - { id: loggers, profile: digest, task: "Enumerate every logger call site, with file:line." }
+  - { id: risky,   profile: audit,  task: "Find unchecked array indexing in src/, with file:line." }

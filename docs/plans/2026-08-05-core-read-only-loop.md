@@ -1,5 +1,13 @@
 # subagents Core Read-Only Loop — Implementation Plan
 
+> **Superseded:** Task 4's code blocks below (`src/tools/search.ts`,
+> `tests/tools/search.test.ts`) do not match what shipped. An authorized fix
+> during implementation added full omission reporting (excluded directories,
+> unreadable files, cut match lines — not just the match/file cap) and
+> root-relative `list_dir` filtering, neither of which appear in the Task 4
+> listing here. `src/` is authoritative wherever this plan and the code
+> disagree; treat this document as history, not a spec to re-derive from.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A working `subagents run` command that delegates a read-only task to any OpenAI-compatible model and returns a small JSON envelope.
@@ -14,7 +22,9 @@
 - **Zero runtime dependencies.** `devDependencies` may contain only `@types/bun` and `typescript`.
 - **Mirror Claude Code's tool semantics exactly.** Deviation is a bug.
 - **Never truncate silently.** Every truncated tool result ends with an explicit marker naming the range shown, the amount withheld, and how to continue.
+- **Prompt economy is a hard constraint, not style.** The system prompt and every tool schema are re-sent on *every turn*, so each word is paid per-turn and directly drives latency — a measured 296-token turn took 2.4s against 11.0s for an 8,186-token one. Keep the system prompt and tool descriptions as short as they can be while retaining every load-bearing instruction. **Compress wording, never drop information:** the verbose truncation marker is what fixed a real coverage failure, so all four of its facts (range shown, amount withheld, how to continue, not-yet-complete) must survive any rewording.
 - **Termination is "assistant message with no tool calls".** No terminator tool may ever be required.
+- **Never overrun the caller's deadline.** The caller invokes this through a shell tool with a hard wall-clock limit (commonly 120s, max 600s). Being killed at that limit yields truncated stdout and no envelope, leaving the caller unable to tell whether any work happened. The loop must stop early and emit a valid envelope with `status: "deadline"` instead.
 - Transcripts persist the **full message array**, not just API responses.
 - Every filesystem path is confined to the run root via realpath; escapes throw.
 - License MIT. Repository `https://github.com/andrhamm/subagents`. Do not add a git remote or push.
@@ -622,7 +632,7 @@ describe("read_file", () => {
     expect(r.truncated).toBe(true);
     expect(r.content).toContain("TRUNCATED");
     expect(r.content).toContain("lines 1-190 of 500");
-    expect(r.content).toContain("310 lines NOT shown");
+    expect(r.content).toContain("310 not shown");
     expect(r.content).toContain("offset=191");
   });
 
@@ -694,10 +704,8 @@ export const readFile: Tool = {
     function: {
       name: "read_file",
       description:
-        `Read a text file with line numbers. Returns at most ${MAX_READ_LINES} lines. ` +
-        "If the file is longer, the result ends with an explicit TRUNCATED marker; " +
-        "call again with offset to read the rest before concluding anything about " +
-        "the file.",
+        `Read a text file with line numbers. Max ${MAX_READ_LINES} lines; a longer ` +
+        "file ends with a TRUNCATED marker — page with offset before concluding.",
       parameters: {
         type: "object",
         properties: {
@@ -726,11 +734,13 @@ export const readFile: Tool = {
 
     if (withheld > 0) {
       return {
+        // Four facts, deliberately: range shown, amount withheld, how to
+        // continue, and that this is not the whole file. Reword freely; do
+        // not drop any of them.
         content:
-          `${body}\n[TRUNCATED: showed lines ${start}-${end} of ${lines.length}. ` +
-          `${withheld} lines NOT shown. Call read_file again with offset=${end + 1} ` +
-          "to continue. Do not draw conclusions about the whole file until you " +
-          "have read all of it.]",
+          `${body}\n[TRUNCATED: lines ${start}-${end} of ${lines.length}; ` +
+          `${withheld} not shown. Continue with offset=${end + 1}. ` +
+          "Incomplete — do not conclude yet.]",
         truncated: true,
       };
     }
@@ -745,7 +755,7 @@ export const readFile: Tool = {
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `bun test tests/tools/read.test.ts`
-Expected: PASS, 11 tests.
+Expected: PASS, 10 tests (3 `safePath`, 7 `read_file`).
 
 - [ ] **Step 7: Commit**
 
@@ -899,8 +909,7 @@ function capped(
     return {
       content:
         `${shown.join("\n")}\n[TRUNCATED: showing ${shown.length} of ${total} ` +
-        `${what}. ${total - shown.length} withheld. ${advice} Do not treat this ` +
-        "as the complete set.]",
+        `${what}; ${total - shown.length} withheld. ${advice} Incomplete set.]`,
       truncated: true,
     };
   }
@@ -914,9 +923,8 @@ export const grep: Tool = {
     function: {
       name: "grep",
       description:
-        "Search file contents by regular expression. Returns matching lines as " +
-        "path:lineno:text. Results are capped; a TRUNCATED marker says how many " +
-        "matches were withheld.",
+        "Search file contents by regex. Returns path:lineno:text. Capped; a " +
+        "TRUNCATED marker reports how many matches were withheld.",
       parameters: {
         type: "object",
         properties: {
@@ -973,8 +981,7 @@ export const glob: Tool = {
     function: {
       name: "glob",
       description:
-        "Find files by shell glob, e.g. 'src/**/*.ts'. Results are capped with an " +
-        "explicit TRUNCATED marker.",
+        "Find files by shell glob, e.g. 'src/**/*.ts'. Capped with a TRUNCATED marker.",
       parameters: {
         type: "object",
         properties: { pattern: { type: "string", description: "Shell glob pattern." } },
@@ -1264,6 +1271,90 @@ describe("runLoop tool dispatch", () => {
   });
 });
 
+describe("runLoop deadline", () => {
+  /** Backend whose every reply takes `delayMs`, so turn duration is controllable. */
+  class SlowBackend implements Backend {
+    public calls = 0;
+    public timeouts: number[] = [];
+    constructor(private delayMs: number) {}
+    async chat(_req: ChatRequest, timeoutMs: number): Promise<ChatResponse> {
+      this.calls++;
+      this.timeouts.push(timeoutMs);
+      await Bun.sleep(this.delayMs);
+      return assistant(`turn ${this.calls}`, [["c", "t", "{}"]]);
+    }
+  }
+
+  it("stops with status deadline rather than starting a turn it cannot finish", async () => {
+    const backend = new SlowBackend(120);
+    const r = await runLoop({
+      ...base, backend, maxTurns: 50,
+      tools: [fakeTool("t", { content: "x", truncated: false })],
+      deadlineAt: Date.now() + 400,
+      wrapupReserveMs: 50,
+    });
+    expect(r.status).toBe("deadline");
+    // Ran at least once, but nowhere near maxTurns.
+    expect(r.turns).toBeGreaterThan(0);
+    expect(r.turns).toBeLessThan(10);
+    expect(r.detail).toMatch(/worst observed turn|deadline reached/);
+  });
+
+  it("keeps the last assistant text as the partial summary", async () => {
+    const backend = new SlowBackend(120);
+    const r = await runLoop({
+      ...base, backend, maxTurns: 50,
+      tools: [fakeTool("t", { content: "x", truncated: false })],
+      deadlineAt: Date.now() + 400,
+      wrapupReserveMs: 50,
+    });
+    expect(r.summary).toMatch(/^turn \d+$/);
+  });
+
+  it("stops immediately when the deadline has already passed", async () => {
+    const backend = new SlowBackend(10);
+    const r = await runLoop({
+      ...base, backend, tools: [],
+      deadlineAt: Date.now() - 1,
+      wrapupReserveMs: 50,
+    });
+    expect(r.status).toBe("deadline");
+    expect(r.turns).toBe(0);
+    expect(backend.calls).toBe(0);
+    expect(r.detail).toContain("deadline reached before turn 1");
+  });
+
+  it("clamps the per-request timeout to the remaining budget", async () => {
+    const backend = new SlowBackend(10);
+    await runLoop({
+      ...base, backend, maxTurns: 1, timeoutMs: 300_000,
+      tools: [fakeTool("t", { content: "x", truncated: false })],
+      deadlineAt: Date.now() + 5_000,
+      wrapupReserveMs: 1_000,
+    });
+    // Budget was ~4s after reserve, far below the configured 300s.
+    expect(backend.timeouts[0]!).toBeLessThan(5_000);
+    expect(backend.timeouts[0]!).toBeGreaterThan(0);
+  });
+
+  it("never clamps the request timeout below a usable floor", async () => {
+    const backend = new SlowBackend(1);
+    await runLoop({
+      ...base, backend, maxTurns: 1, timeoutMs: 300_000,
+      tools: [fakeTool("t", { content: "x", truncated: false })],
+      deadlineAt: Date.now() + 1_100,
+      wrapupReserveMs: 1_000,
+    });
+    expect(backend.timeouts[0]!).toBeGreaterThanOrEqual(1_000);
+  });
+
+  it("runs to normal completion when no deadline is given", async () => {
+    const backend = new ScriptedBackend([assistant("done")]);
+    const r = await runLoop({ ...base, backend, tools: [] });
+    expect(r.status).toBe("ok");
+  });
+});
+
 describe("runLoop errors", () => {
   it("returns error status when the backend throws", async () => {
     const backend = new ScriptedBackend([new Error("connection refused")]);
@@ -1316,7 +1407,10 @@ import type {
 } from "./types";
 import type { Tool } from "./tools/types";
 
-export type LoopStatus = "ok" | "max_turns" | "budget" | "error";
+export type LoopStatus = "ok" | "max_turns" | "budget" | "deadline" | "error";
+
+/** Time reserved to write the transcript and emit the envelope. */
+export const DEFAULT_WRAPUP_RESERVE_MS = 3000;
 
 export interface LoopOptions {
   backend: Backend;
@@ -1329,6 +1423,10 @@ export interface LoopOptions {
   sampling: SamplingParams;
   timeoutMs: number;
   root: string;
+  /** Absolute epoch-ms budget. Omit for no deadline. */
+  deadlineAt?: number;
+  /** Override the wrap-up reserve. */
+  wrapupReserveMs?: number;
   onTurn?: (turn: number, secs: number, toolNames: string[]) => void;
 }
 
@@ -1342,14 +1440,15 @@ export interface LoopResult {
   truncations: number;
 }
 
+// Re-sent every turn, so every word is paid per-turn and adds latency. Five
+// load-bearing rules, each earned from an observed failure. Compress wording
+// freely; do not drop a rule.
 export const DEFAULT_SYSTEM_PROMPT =
-  "You are a coding agent working in a repository. Use the provided tools to " +
-  "inspect files, then answer. Cite file paths and line numbers exactly as they " +
-  "appear in the numbered read output. If a tool result contains a TRUNCATED " +
-  "marker, you have not seen the whole thing — read the rest before drawing any " +
-  "conclusion about it. Do not state totals or counts; list what you found and " +
-  "let the caller count. When you have the answer, state it directly and do not " +
-  "call another tool.";
+  "Coding agent in a repository. Inspect with tools, then answer.\n" +
+  "Cite paths and line numbers exactly as shown in numbered reads.\n" +
+  "TRUNCATED means you have not seen all of it — read the rest before concluding.\n" +
+  "List what you found; never state totals or counts.\n" +
+  "When you have the answer, state it directly; do not call another tool.";
 
 export async function runLoop(o: LoopOptions): Promise<LoopResult> {
   const byName = new Map(o.tools.map((t) => [t.name, t]));
@@ -1366,9 +1465,38 @@ export async function runLoop(o: LoopOptions): Promise<LoopResult> {
     status: LoopStatus, summary: string, detail: string,
   ): LoopResult => ({ status, summary, detail, turns, messages, usage, truncations });
 
+  const reserve = o.wrapupReserveMs ?? DEFAULT_WRAPUP_RESERVE_MS;
+  const lastText = (): string =>
+    [...messages].reverse().find(
+      (m): m is AssistantMessage => m.role === "assistant")?.content ?? "";
+  /** Worst turn seen so far. The tail overruns budgets, not the mean. */
+  let worstTurnMs = 0;
+
   while (turns < o.maxTurns) {
+    if (o.deadlineAt !== undefined) {
+      const remaining = o.deadlineAt - Date.now();
+      if (remaining <= reserve) {
+        return done("deadline", lastText(),
+          `deadline reached before turn ${turns + 1}; ` +
+          `${Math.round(remaining / 1000)}s left, ${Math.round(reserve / 1000)}s reserved ` +
+          "to emit this envelope");
+      }
+      if (turns > 0 && remaining - worstTurnMs < reserve) {
+        return done("deadline", lastText(),
+          `stopped after ${turns} turn(s): ${Math.round(remaining / 1000)}s of budget left ` +
+          `but the worst observed turn took ${Math.round(worstTurnMs / 1000)}s`);
+      }
+    }
+
     turns++;
     const started = Date.now();
+
+    // A configured request timeout longer than the remaining budget is
+    // incoherent — one slow call would overrun despite the gate above.
+    let timeoutMs = o.timeoutMs;
+    if (o.deadlineAt !== undefined) {
+      timeoutMs = Math.max(1000, Math.min(timeoutMs, o.deadlineAt - Date.now() - reserve));
+    }
 
     let res: ChatResponse;
     try {
@@ -1380,11 +1508,13 @@ export async function runLoop(o: LoopOptions): Promise<LoopResult> {
           max_tokens: o.maxTokens,
           ...o.sampling,
         },
-        o.timeoutMs,
+        timeoutMs,
       );
     } catch (e) {
       return done("error", "", e instanceof Error ? e.message : String(e));
     }
+
+    worstTurnMs = Math.max(worstTurnMs, Date.now() - started);
 
     if (res.usage) usage.push(res.usage);
 
@@ -1426,11 +1556,8 @@ export async function runLoop(o: LoopOptions): Promise<LoopResult> {
     }
   }
 
-  const lastAssistant = [...messages]
-    .reverse()
-    .find((m): m is AssistantMessage => m.role === "assistant");
   return done(
-    "max_turns", lastAssistant?.content ?? "",
+    "max_turns", lastText(),
     `hit max_turns=${o.maxTurns} without a final answer`,
   );
 }
@@ -1467,7 +1594,7 @@ async function dispatch(
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `bun test tests/loop.test.ts`
-Expected: PASS, 16 tests.
+Expected: PASS — 4 termination, 6 tool dispatch, 6 deadline, 4 error. Report the count you observe rather than matching a total stated here.
 
 - [ ] **Step 6: Commit**
 
@@ -1845,6 +1972,32 @@ describe("subagents run", () => {
     expect(await proc.exited).toBe(1);
     expect(err).toContain("--task");
   });
+
+  it("rejects a non-numeric --deadline-secs", async () => {
+    const proc = Bun.spawn(
+      ["bun", CLI, "run", "--profile", "digest", "--task", "x", "--root", root,
+       "--config", join(root, "subagents.yaml"), "--deadline-secs", "soon"],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const err = await new Response(proc.stderr).text();
+    expect(await proc.exited).toBe(1);
+    expect(err).toContain("--deadline-secs must be a positive number");
+  });
+
+  it("returns a valid envelope rather than nothing when the deadline is already spent", async () => {
+    const proc = Bun.spawn(
+      ["bun", CLI, "run", "--profile", "digest", "--task", "x", "--root", root,
+       "--config", join(root, "subagents.yaml"), "--deadline-secs", "0.001"],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const out = await new Response(proc.stdout).text();
+    // Non-zero exit, but stdout MUST still carry a parseable envelope — the
+    // whole point of the deadline is that the caller is never left with nothing.
+    expect(await proc.exited).not.toBe(0);
+    const env = JSON.parse(out);
+    expect(env.status).toBe("deadline");
+    expect(env.transcript).toBeTruthy();
+  });
 });
 ```
 
@@ -1878,6 +2031,9 @@ Options:
   --config <path>      Config file. Default: ./subagents.yaml, then
                        ~/.config/subagents/config.yaml
   --transcript <path>  Where to write the transcript. Default: a temp file.
+  --deadline-secs <n>  Wall-clock budget. Set it below your shell tool's timeout:
+                       the loop then stops early with status "deadline" and a
+                       valid envelope, instead of being killed with no output.
   --verbose            Print per-turn progress to stderr.
 `;
 
@@ -1918,6 +2074,7 @@ async function main(argv: string[]): Promise<number> {
       tier: { type: "string" },
       config: { type: "string" },
       transcript: { type: "string" },
+      "deadline-secs": { type: "string" },
       verbose: { type: "boolean", default: false },
     },
     allowPositionals: false,
@@ -1926,6 +2083,18 @@ async function main(argv: string[]): Promise<number> {
   for (const required of ["profile", "task"] as const) {
     if (!values[required]) {
       process.stderr.write(`missing required --${required}\n\n${USAGE}`);
+      return 1;
+    }
+  }
+
+  let deadlineSecs: number | undefined;
+  if (values["deadline-secs"] !== undefined) {
+    deadlineSecs = Number(values["deadline-secs"]);
+    if (!Number.isFinite(deadlineSecs) || deadlineSecs <= 0) {
+      process.stderr.write(
+        `--deadline-secs must be a positive number, got ` +
+          `${JSON.stringify(values["deadline-secs"])}\n`,
+      );
       return 1;
     }
   }
@@ -1950,6 +2119,9 @@ async function main(argv: string[]): Promise<number> {
     sampling: run.sampling,
     timeoutMs: run.timeoutMs,
     root,
+    ...(deadlineSecs === undefined
+      ? {}
+      : { deadlineAt: started + deadlineSecs * 1000 }),
     ...(values.verbose
       ? {
           onTurn: (turn: number, secs: number, names: string[]) =>
@@ -1987,12 +2159,12 @@ try {
 - [ ] **Step 5: Run the test to verify it passes**
 
 Run: `bun test tests/cli.test.ts`
-Expected: PASS, 3 tests.
+Expected: PASS — one happy path, two argument-error cases, two deadline cases. Report the count you observe.
 
 - [ ] **Step 6: Run the whole suite and typecheck**
 
 Run: `bun test && bun run typecheck`
-Expected: all tests pass (49 total), typecheck silent.
+Expected: every test passes and typecheck is silent. Report the actual test count rather than matching a number stated here — a count written in advance drifts as tasks are amended.
 
 - [ ] **Step 7: Verify against a real model**
 
