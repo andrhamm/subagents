@@ -78,6 +78,35 @@ function serveAnswer(text: string): { url: string; stop(): void } {
   return { url: `http://127.0.0.1:${server.port}/v1`, stop: () => server.stop(true) };
 }
 
+/**
+ * Replies HTTP 500 to the first `failures` requests, then replays `script` —
+ * the shape LM Studio produced under concurrent multi-model load
+ * (docs/insights/2026-08-07-bnt-campaign.md findings 8-9): instant 5xx,
+ * zero tokens, before any model turn.
+ */
+function serveFlaky(
+  failures: number, script: object[],
+): { url: string; requests(): number; stop(): void } {
+  let n = 0;
+  let i = 0;
+  const server = Bun.serve({
+    port: 0,
+    fetch: async (req) => {
+      await req.json();
+      n++;
+      if (n <= failures) return new Response("upstream connect error", { status: 500 });
+      const next = script[Math.min(i, script.length - 1)];
+      i++;
+      return Response.json(next);
+    },
+  });
+  return {
+    url: `http://127.0.0.1:${server.port}/v1`,
+    requests: () => n,
+    stop: () => server.stop(true),
+  };
+}
+
 /** A fake model that returns no tool calls and no content — the capability-error shape. */
 function serveBroken(): { url: string; stop(): void } {
   const server = Bun.serve({
@@ -228,6 +257,73 @@ jobs:
       }
       expect(existsSync(join(tdir, "one.json"))).toBe(true);
       expect(existsSync(join(tdir, "one.escalated.json"))).toBe(true);
+    } finally {
+      cheap.stop();
+      strong.stop();
+    }
+  });
+
+  it("retries an instant-500 job once on the same tier and reports both attempts", async () => {
+    const cheap = serveFlaky(1, [answerMsg("second try worked")]);
+    const strong = serveAnswer("unused");
+    const f = fixture(cheap.url, strong.url);
+    cleanups.push(f.root);
+    try {
+      writeFileSync(join(f.root, "jobs.yaml"),
+        `jobs:\n  - { id: one, profile: digest, task: "first" }\n`);
+      const tdir = join(f.root, "transcripts");
+      const { code, out } = await runBatch([
+        "--jobs", join(f.root, "jobs.yaml"), "--config", f.config, "--root", f.root,
+        "--transcript-dir", tdir, "--infra-retry-backoff-secs", "0.05",
+      ]);
+      expect(code).toBe(0);
+      const rollup = JSON.parse(out);
+      expect(rollup.status).toBe("ok");
+      const job = rollup.jobs[0];
+      expect(job.attempts).toHaveLength(2);
+      expect(job.attempts[0].infra_retried).toBe(true);
+      expect(job.attempts[0].envelope.status).toBe("error");
+      expect(job.attempts[0].envelope.summary).toStartWith("HTTP 500");
+      expect(job.attempts[0].tier).toBeUndefined(); // same tier, not an escalation
+      expect(job.final.envelope.status).toBe("ok");
+      expect(job.final.envelope.summary).toBe("second try worked");
+      // Each try keeps its own transcript — the retry must not overwrite
+      // the failed try's file while attempts[0] still points at it.
+      expect(existsSync(join(tdir, "one.json"))).toBe(true);
+      expect(existsSync(join(tdir, "one.retry.json"))).toBe(true);
+      expect(cheap.requests()).toBe(2);
+    } finally {
+      cheap.stop();
+      strong.stop();
+    }
+  });
+
+  it("consumes escalation only after the one infra retry also fails", async () => {
+    const cheap = serveFlaky(Infinity, []); // LM Studio wedged: every request 500s
+    const strong = serveAnswer("recovered");
+    const f = fixture(cheap.url, strong.url);
+    cleanups.push(f.root);
+    try {
+      writeFileSync(join(f.root, "jobs.yaml"),
+        `jobs:\n  - { id: one, profile: digest, task: "first" }\n`);
+      const { code, out } = await runBatch([
+        "--jobs", join(f.root, "jobs.yaml"), "--config", f.config, "--root", f.root,
+        "--escalate-tier", "strong", "--infra-retry-backoff-secs", "0.05",
+      ]);
+      expect(code).toBe(0);
+      const rollup = JSON.parse(out);
+      expect(rollup.status).toBe("ok");
+      const job = rollup.jobs[0];
+      // Discarded infra try, its failed same-tier retry, then the escalation.
+      expect(job.attempts).toHaveLength(3);
+      expect(job.attempts[0].infra_retried).toBe(true);
+      expect(job.attempts[1].infra_retried).toBeUndefined();
+      expect(job.attempts[1].envelope.status).toBe("error");
+      expect(job.attempts[2].tier).toBe("strong");
+      expect(job.final.envelope.summary).toBe("recovered");
+      // The cheap tier saw exactly two requests: the try and its one retry —
+      // bounded, never a retry storm.
+      expect(cheap.requests()).toBe(2);
     } finally {
       cheap.stop();
       strong.stop();

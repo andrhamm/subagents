@@ -221,6 +221,11 @@ subagents batch --jobs jobs.yaml --escalate-tier strong \
 - `--escalate-tier` runs the sweep-then-escalate recipe inside one call:
   jobs that failed, stopped early, or worked blind (`truncations > 0`)
   re-run once on the named tier, and each job's report carries both attempts.
+- A run that dies on transport or an instant HTTP 5xx before any model turn
+  (a wedged or overloaded server, not a weak model) retries once on the
+  *same* tier after a backoff (`--infra-retry-backoff-secs`, default 3)
+  before escalation is consumed. The discarded try appears in the report's
+  `attempts` flagged `infra_retried: true`.
 - The batch deadline stops *starting* jobs. `not_run` in the rollup names
   what never started — those jobs need a re-run, not an apology.
 - For batches that outlive your shell timeout, run in the background and

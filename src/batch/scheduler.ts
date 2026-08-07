@@ -1,5 +1,14 @@
 import type { Envelope } from "../envelope";
 import type { ResolvedJob } from "./jobs";
+import { isInfraFailure } from "./escalate";
+
+/** The discarded try behind an infra retry — kept, never silently dropped. */
+export interface InfraFailure {
+  /** Always status "error" with a transport/5xx summary (see isInfraFailure). */
+  envelope: Envelope;
+  startedAt: number;
+  finishedAt: number;
+}
 
 export interface JobResult {
   id: string;
@@ -9,6 +18,12 @@ export interface JobResult {
   queuedAt: number;
   startedAt: number;
   finishedAt: number;
+  /**
+   * Present when the first try died on infrastructure before any model turn
+   * and the scheduler retried once at the same tier: the discarded try.
+   * This result is that retry — timings cover the retry alone.
+   */
+  infraFailure?: InfraFailure;
 }
 
 export interface BatchState {
@@ -21,7 +36,8 @@ export interface BatchState {
 
 export interface ScheduleOptions {
   jobs: ResolvedJob[];
-  runJob(job: ResolvedJob): Promise<Envelope>;
+  /** `attempt` is 0 for the first try, 1 for the one infra retry. */
+  runJob(job: ResolvedJob, attempt: number): Promise<Envelope>;
   /**
    * Advisory progress callback (drives the --progress file). Not awaited:
    * a slow observer must not slow the batch, and a torn read of the
@@ -37,9 +53,18 @@ export interface ScheduleOptions {
   deadlineAt?: number;
   /** Time reserved to assemble the rollup. */
   reserveMs?: number;
+  /**
+   * Wait before the single same-tier retry of a job whose run died on
+   * infrastructure (transport/HTTP-5xx before any model turn — see
+   * isInfraFailure). The wait is the point: an instant re-dispatch lands in
+   * the same contention that produced the failure. The sleeping worker
+   * deliberately holds its concurrency slot, easing that contention.
+   */
+  infraRetryBackoffMs?: number;
 }
 
 export const DEFAULT_BATCH_RESERVE_MS = 2000;
+export const DEFAULT_INFRA_RETRY_BACKOFF_MS = 3000;
 
 export interface ScheduleResult {
   results: JobResult[];
@@ -110,14 +135,35 @@ export async function schedule(o: ScheduleOptions): Promise<ScheduleResult> {
         if (!job) return;
         started.add(job.id);
         running.add(job.id);
-        const startedAt = Date.now();
+        let startedAt = Date.now();
         emit();
         let env: Envelope | null = null;
         let error: string | undefined;
         try {
-          env = await o.runJob(job);
+          env = await o.runJob(job, 0);
         } catch (e) {
           error = e instanceof Error ? e.message : String(e);
+        }
+        // One same-tier retry when the model never saw the task — an infra
+        // failure retried here is not a failure escalation should pay for.
+        // Bounded to one, and only when the deadline can afford the backoff
+        // plus the rollup reserve; past that the failure stands as today.
+        let infraFailure: InfraFailure | undefined;
+        const backoff = o.infraRetryBackoffMs ?? DEFAULT_INFRA_RETRY_BACKOFF_MS;
+        if (
+          env !== null && isInfraFailure(env) &&
+          (o.deadlineAt === undefined ||
+            Date.now() + backoff + (o.reserveMs ?? DEFAULT_BATCH_RESERVE_MS) < o.deadlineAt)
+        ) {
+          infraFailure = { envelope: env, startedAt, finishedAt: Date.now() };
+          await Bun.sleep(backoff);
+          startedAt = Date.now();
+          env = null;
+          try {
+            env = await o.runJob(job, 1);
+          } catch (e) {
+            error = e instanceof Error ? e.message : String(e);
+          }
         }
         running.delete(job.id);
         done.push(job.id);
@@ -128,6 +174,7 @@ export async function schedule(o: ScheduleOptions): Promise<ScheduleResult> {
           queuedAt,
           startedAt,
           finishedAt: Date.now(),
+          ...(infraFailure === undefined ? {} : { infraFailure }),
         });
         emit();
       }

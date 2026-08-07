@@ -41,6 +41,12 @@ Batch options:
                           the poll target for long batches run in the background.
   --escalate-tier <name>  Re-run jobs that failed, stopped early, or worked
                           blind (truncations > 0) once on this tier.
+  --infra-retry-backoff-secs <n>  A job whose run died on transport or an
+                          instant HTTP 5xx before any model turn is retried
+                          once on the SAME tier after this wait, without
+                          consuming its escalation attempt — the model never
+                          saw the task, so a stronger model fixes nothing.
+                          Default: 3.
   --transcript-dir <dir>  Per-job transcripts. Default: a temp directory.
   --deadline-secs <n>     Batch budget. Stops STARTING jobs; running jobs
                           finish, never-started ones are listed not_run.
@@ -121,6 +127,7 @@ function normalizeArgv(argv: string[], stringOpts: ReadonlySet<string>): string[
 
 const BATCH_STRING_OPTS = new Set([
   "jobs", "config", "root", "progress", "deadline-secs", "escalate-tier", "transcript-dir",
+  "infra-retry-backoff-secs",
 ]);
 
 const BENCH_STRING_OPTS = new Set([
@@ -267,6 +274,7 @@ async function batchMain(argv: string[]): Promise<number> {
       "escalate-tier": { type: "string" },
       "transcript-dir": { type: "string" },
       "deadline-secs": { type: "string" },
+      "infra-retry-backoff-secs": { type: "string" },
       verbose: { type: "boolean", default: false },
       help: { type: "boolean", short: "h" },
     },
@@ -295,6 +303,20 @@ async function batchMain(argv: string[]): Promise<number> {
       );
       return 1;
     }
+  }
+
+  let infraRetryBackoffMs: number | undefined;
+  if (values["infra-retry-backoff-secs"] !== undefined) {
+    const secs = Number(values["infra-retry-backoff-secs"]);
+    // Zero is coherent (retry immediately); negative is not.
+    if (!Number.isFinite(secs) || secs < 0) {
+      process.stderr.write(
+        `--infra-retry-backoff-secs must be a non-negative number, got ` +
+          `${JSON.stringify(values["infra-retry-backoff-secs"])}\n`,
+      );
+      return 1;
+    }
+    infraRetryBackoffMs = secs * 1000;
   }
 
   // Fail-fast zone: everything below throws to the top-level catch (exit 1,
@@ -331,13 +353,16 @@ async function batchMain(argv: string[]): Promise<number> {
       }
     : undefined;
 
-  const runJob = (suffix: string) => (job: ResolvedJob) =>
-    executeRun({
+  const runJob = (suffix: string) => (job: ResolvedJob, attempt: number) => {
+    // The infra retry gets its own transcript — the discarded attempt's
+    // envelope keeps pointing at a file the retry never overwrote.
+    const label = `${job.id}${suffix}${attempt > 0 ? ".retry" : ""}`;
+    return executeRun({
       run: job.run,
       task: job.spec.task,
       root: job.root,
-      transcriptPath: join(transcriptDir, `${job.id}${suffix}.json`),
-      logPath: join(transcriptDir, `${job.id}${suffix}.log.jsonl`),
+      transcriptPath: join(transcriptDir, `${label}.json`),
+      logPath: join(transcriptDir, `${label}.log.jsonl`),
       ...(deadlineAt === undefined ? {} : { deadlineAt }),
       ...(process.env["SUBAGENTS_API_KEY"]
         ? { apiKey: process.env["SUBAGENTS_API_KEY"] }
@@ -346,17 +371,19 @@ async function batchMain(argv: string[]): Promise<number> {
         ? {
             onTurn: (turn: number, secs: number, names: string[]) =>
               process.stderr.write(
-                `  [${job.id}${suffix}] turn ${turn}: ${secs.toFixed(1)}s ` +
+                `  [${label}] turn ${turn}: ${secs.toFixed(1)}s ` +
                   `tools=[${names.join(", ")}]\n`),
           }
         : {}),
     }).then((o) => o.envelope);
+  };
 
   const first = await schedule({
     jobs,
     runJob: runJob(""),
     ...(deadlineAt === undefined ? {} : { deadlineAt }),
     ...(onUpdate ? { onUpdate } : {}),
+    ...(infraRetryBackoffMs === undefined ? {} : { infraRetryBackoffMs }),
   });
 
   let second: ScheduleResult = { results: [], notRun: [] };
@@ -376,6 +403,7 @@ async function batchMain(argv: string[]): Promise<number> {
         runJob: runJob(".escalated"),
         ...(deadlineAt === undefined ? {} : { deadlineAt }),
         ...(onUpdate ? { onUpdate } : {}),
+        ...(infraRetryBackoffMs === undefined ? {} : { infraRetryBackoffMs }),
       });
     }
     reports = mergeAttempts(first.results, second.results, escalateTier);
