@@ -103,6 +103,100 @@ describe("schedule", () => {
   });
 });
 
+/** The envelope a turn-1 transport/5xx death produces (see isInfraFailure). */
+function infraEnvelope(id: string): Envelope {
+  return {
+    ...envelope(id),
+    status: "error", summary: "HTTP 500: upstream connect error", local_tokens: 0,
+  };
+}
+
+describe("schedule infra retry", () => {
+  it("retries an infra-failed job once at the same tier, after the backoff", async () => {
+    const calls: Array<[string, number]> = [];
+    const { results } = await schedule({
+      jobs: [job("a", "m")],
+      runJob: async (j, attempt) => {
+        calls.push([j.id, attempt]);
+        return attempt === 0 ? infraEnvelope(j.id) : envelope(j.id);
+      },
+      infraRetryBackoffMs: 30,
+    });
+    expect(calls).toEqual([["a", 0], ["a", 1]]);
+    expect(results).toHaveLength(1);
+    const r = results[0]!;
+    expect(r.envelope!.status).toBe("ok");
+    // The discarded try is kept, not silently dropped…
+    expect(r.infraFailure!.envelope.summary).toStartWith("HTTP 500");
+    // …and the retry waited out the backoff instead of re-dispatching into
+    // the same contention.
+    expect(r.startedAt - r.infraFailure!.finishedAt).toBeGreaterThanOrEqual(20);
+  });
+
+  it("gives up after one retry — the failure stands for escalation to handle", async () => {
+    let calls = 0;
+    const { results } = await schedule({
+      jobs: [job("a", "m")],
+      runJob: async (j) => {
+        calls++;
+        return infraEnvelope(j.id);
+      },
+      infraRetryBackoffMs: 1,
+    });
+    expect(calls).toBe(2);
+    const r = results[0]!;
+    expect(r.envelope!.status).toBe("error");
+    expect(r.infraFailure).toBeDefined();
+  });
+
+  it("does not retry a failure the model participated in", async () => {
+    let calls = 0;
+    const { results } = await schedule({
+      jobs: [job("a", "m")],
+      runJob: async (j) => {
+        calls++;
+        return { ...envelope(j.id), status: "error", summary: "gave up" };
+      },
+      infraRetryBackoffMs: 1,
+    });
+    expect(calls).toBe(1);
+    expect(results[0]!.infraFailure).toBeUndefined();
+  });
+
+  it("skips the retry when the deadline cannot afford backoff plus reserve", async () => {
+    let calls = 0;
+    const { results } = await schedule({
+      jobs: [job("a", "m")],
+      runJob: async (j) => {
+        calls++;
+        return infraEnvelope(j.id);
+      },
+      infraRetryBackoffMs: 500,
+      deadlineAt: Date.now() + 150,
+      reserveMs: 50,
+    });
+    expect(calls).toBe(1);
+    const r = results[0]!;
+    expect(r.envelope!.status).toBe("error");
+    expect(r.infraFailure).toBeUndefined();
+  });
+
+  it("keeps the discarded try even when the retry itself throws", async () => {
+    const { results } = await schedule({
+      jobs: [job("a", "m")],
+      runJob: async (j, attempt) => {
+        if (attempt === 1) throw new Error("connection refused");
+        return infraEnvelope(j.id);
+      },
+      infraRetryBackoffMs: 1,
+    });
+    const r = results[0]!;
+    expect(r.envelope).toBeNull();
+    expect(r.error).toContain("connection refused");
+    expect(r.infraFailure!.envelope.summary).toStartWith("HTTP 500");
+  });
+});
+
 describe("schedule deadline", () => {
   it("stops starting jobs at the deadline and names the ones that never ran", async () => {
     const ran: string[] = [];
