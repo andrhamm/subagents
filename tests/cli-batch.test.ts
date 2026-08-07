@@ -80,9 +80,8 @@ function serveAnswer(text: string): { url: string; stop(): void } {
 
 /**
  * Replies HTTP 500 to the first `failures` requests, then replays `script` —
- * the shape LM Studio produced under concurrent multi-model load
- * (docs/insights/2026-08-07-bnt-campaign.md findings 8-9): instant 5xx,
- * zero tokens, before any model turn.
+ * the shape LM Studio produces under concurrent multi-model load (observed
+ * live 2026-08-07): instant 5xx, zero tokens, before any model turn.
  */
 function serveFlaky(
   failures: number, script: object[],
