@@ -167,6 +167,26 @@ far less than running all of it there.
 This is why `subagents` config has named tiers and why `--tier` overrides a profile's
 default.
 
+**The two-pass recipe assumes grouped batches.** `batch` groups jobs by
+(provider, model) so one load serves many jobs. Interleaving tiers across
+*single* `run` calls inverts the economics: every failed cheap attempt pays the
+cheap model's JIT load, a doomed run, AND the strong model's load for the
+escalation. Live measurement (2026-08-07, single LM Studio box): cheap-first
+writes on a real repo were ~2× slower wall-clock than strong-first, with a 0/3
+acceptance rate on tab-indented files. Tier choice on one box is a wall-clock /
+load-amortization question, not a per-token price question — writes go to the
+strongest coder you can hold resident; cheap tiers earn their keep in same-model
+digest sweeps.
+
+## One box, one model at a time
+
+LM Studio serves one JIT load at a time: concurrent requests that need
+*different* models can fail instantly with HTTP 500 (observed live: 0.2 s,
+zero tokens). Set `max_in_flight: 1` on any `kind: lmstudio` provider unless
+you have verified your server handles concurrent multi-model load. Since
+0.3.0, `batch` retries same-tier once on transport-level 5xx before spending
+its escalation.
+
 ## Sampling parameters
 
 **Wrong sampling parameters produce wrong results that look real.** There is no
