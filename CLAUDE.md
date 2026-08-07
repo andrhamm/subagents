@@ -38,10 +38,11 @@ Test fakes embody the assumption being violated. A wire-shape regression
 died on turn 2 of the first live run — the same class of failure was caught
 five times by reviewers during the read-only branch, never once by a test.
 **Any change to wire message shapes gets verified against a live endpoint
-before trusting the suite.** Live test host: LM Studio on `lan-host`
-(192.0.2.10:1234 — use the IP; Bun's fetch can't resolve the bare
-hostname). LM Studio silently serves unknown model ids with whatever model
-is loaded — verify ids against `/api/v0/models` before trusting a run.
+before trusting the suite.** The live test host lives in the gitignored
+`subagents.yaml` (host names and IPs in these docs are placeholders — use
+an IP in `base_url`; Bun's fetch can't resolve bare LAN hostnames). LM
+Studio silently serves unknown model ids with whatever model is loaded —
+verify ids against `/api/v0/models` before trusting a run.
 
 ## Where things are
 
