@@ -1,4 +1,4 @@
-import { cpSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../config";
@@ -44,6 +44,13 @@ export async function runFixture(
   const run = resolveProfile(cfgWithFixture, "__bench");
 
   const root = mkdtempSync(join(tmpdir(), `subagents-bench-${fx.name}-`));
+  // Hoisted so the finally block can clean it up regardless of where
+  // executeRun leaves off — a write fixture keeps its worktree (that's how
+  // a real orchestrator gets the diff), but the bench has no orchestrator
+  // downstream of it: it scores the envelope and moves on. Left alone, the
+  // worktree lives in TMPDIR outside `root`, so removing `root` orphans it —
+  // one leaked directory per write fixture, forever, at importer scale.
+  let envelope: Envelope | undefined;
   try {
     cpSync(join(fx.dir, "files"), root, { recursive: true });
     await sh(root, "git", "init", "-q");
@@ -54,7 +61,7 @@ export async function runFixture(
     await sh(root, "git", "commit", "-qm", "fixture");
 
     const started = Date.now();
-    const { envelope } = await executeRun({
+    ({ envelope } = await executeRun({
       run,
       task: fx.task,
       root,
@@ -65,7 +72,7 @@ export async function runFixture(
       ...(opts.logDir !== undefined
         ? { logPath: join(opts.logDir, `${fx.name}.${tierName}.log.jsonl`) }
         : {}),
-    });
+    }));
 
     const verdict = scoreEnvelope(fx, envelope);
     const row: BenchRow = {
@@ -84,5 +91,8 @@ export async function runFixture(
     return { row, envelope };
   } finally {
     rmSync(root, { recursive: true, force: true });
+    if (envelope?.worktree && existsSync(envelope.worktree)) {
+      rmSync(envelope.worktree, { recursive: true, force: true });
+    }
   }
 }

@@ -59,7 +59,14 @@ export function makeRunChecks(
       // envelope's truncations count means "input coverage was blind",
       // which a shortened check log is not.
       if (!failing) {
-        return { content: `${lines.join("\n")}\nAll checks pass.`, truncated: false };
+        // Defensive: with zero stages `lines` is empty, and joining first
+        // would leave a leading blank line before "All checks pass." —
+        // config now refuses run_checks with zero stages before a run ever
+        // starts, but this stays honest even if that guard is ever bypassed.
+        const content = lines.length
+          ? `${lines.join("\n")}\nAll checks pass.`
+          : "All checks pass.";
+        return { content, truncated: false };
       }
       return {
         content:

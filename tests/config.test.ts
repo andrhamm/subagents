@@ -212,4 +212,23 @@ describe("checks resolution", () => {
     const bad = YAML_CHECKS.replace('{ name: tests, cmd: "bun test" }', '{ name: tests }');
     expect(() => resolveProfile(parseConfig(bad), "staged")).toThrow(/checks\[0\]/);
   });
+
+  // sh -c "" exits 0 — an empty test_cmd would fabricate a green gate from a
+  // command that ran nothing. Pre-branch, a falsy testCmd meant NO gate at
+  // all; this spelling must fail loudly instead of reopening that hole.
+  it("rejects an empty test_cmd, naming the profile", () => {
+    const yaml = YAML_CHECKS.replace(
+      'legacy:  { tools: [read_file, edit_file], tier: cheap, test_cmd: "bun test" }',
+      'legacy:  { tools: [read_file, edit_file], tier: cheap, test_cmd: "" }');
+    expect(() => resolveProfile(parseConfig(yaml), "legacy"))
+      .toThrow(/profile 'legacy'.*test_cmd must not be empty/s);
+  });
+
+  it("rejects a whitespace-only test_cmd the same way", () => {
+    const yaml = YAML_CHECKS.replace(
+      'legacy:  { tools: [read_file, edit_file], tier: cheap, test_cmd: "bun test" }',
+      'legacy:  { tools: [read_file, edit_file], tier: cheap, test_cmd: "   " }');
+    expect(() => resolveProfile(parseConfig(yaml), "legacy"))
+      .toThrow(/test_cmd must not be empty/);
+  });
 });

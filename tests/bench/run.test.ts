@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseConfig } from "../../src/config";
@@ -17,6 +17,36 @@ function serveAnswer(text: string): { url: string; stop(): void } {
   });
   return { url: `http://127.0.0.1:${server.port}/v1`, stop: () => server.stop(true) };
 }
+
+/** Fake model that plays back a fixed script of responses, one per call. */
+function serveScript(script: object[]): { url: string; stop(): void } {
+  let i = 0;
+  const server = Bun.serve({
+    port: 0,
+    fetch: () => {
+      const next = script[Math.min(i, script.length - 1)];
+      i++;
+      return Response.json(next);
+    },
+  });
+  return { url: `http://127.0.0.1:${server.port}/v1`, stop: () => server.stop(true) };
+}
+
+const call = (id: string, name: string, args: object) => ({
+  choices: [{
+    message: {
+      role: "assistant", content: null,
+      tool_calls: [{ id, function: { name, arguments: JSON.stringify(args) } }],
+    },
+    finish_reason: "tool_calls",
+  }],
+  usage: { prompt_tokens: 100, completion_tokens: 10 },
+});
+
+const answer = (text: string) => ({
+  choices: [{ message: { role: "assistant", content: text }, finish_reason: "stop" }],
+  usage: { prompt_tokens: 100, completion_tokens: 10 },
+});
 
 const cleanups: string[] = [];
 afterEach(() => { for (const d of cleanups.splice(0)) rmSync(d, { recursive: true, force: true }); });
@@ -83,6 +113,41 @@ profiles:
       await runFixture(fx, "cheap", cfg, { deadlineSecs: 60 });
       const after = await Bun.file("bench/fixtures/greet-typo/files/src/greet.ts").text();
       expect(after).toBe(before);
+    } finally {
+      srv.stop();
+    }
+  });
+
+  // The headline write path: read, edit, answer, gate green, oracle green —
+  // and the worktree executeRun kept for the diff must not survive the
+  // bench run that scored it. Left behind, it lives in TMPDIR outside the
+  // fixture's throwaway root, so nothing else ever removes it.
+  it("scores a gated write fixture green and removes the worktree it kept", async () => {
+    const srv = serveScript([
+      call("c1", "read_file", { path: "src/greet.ts" }),
+      call("c2", "edit_file", {
+        path: "src/greet.ts",
+        old_string: "return `Helo, ${name}!`;",
+        new_string: "return `Hello, ${name}!`;",
+      }),
+      answer("Fixed the typo in greet()."),
+    ]);
+    try {
+      const cfg = parseConfig(`
+providers:
+  test: { base_url: "${srv.url}" }
+tiers:
+  cheap: { provider: test, model: "fake-model" }
+profiles:
+  unused: { tools: [read_file], tier: cheap }
+`);
+      const fx = await loadFixture("bench/fixtures/greet-typo");
+      const { row, envelope } = await runFixture(fx, "cheap", cfg, { deadlineSecs: 60 });
+      expect(row.gatePassed).toBe(true);
+      expect(row.oraclePass).toBe(true);
+      expect(row.failures).toEqual([]);
+      expect(envelope.worktree).toBeTruthy();
+      expect(existsSync(envelope.worktree!)).toBe(false);
     } finally {
       srv.stop();
     }

@@ -80,7 +80,8 @@ bug until proven otherwise.** Corollary: never truncate silently, anywhere.
 
 ```
 src/
-  cli.ts               arg parsing, config resolution, dispatch
+  cli.ts               arg parsing, config resolution, dispatch; bench: fixture
+                       glob resolution, baseline comparison
   config.ts            schema + load/merge (providers, tiers, sampling, profiles)
   loop.ts              provider-agnostic agentic loop
   envelope.ts          result envelope
@@ -95,13 +96,13 @@ src/
     edit.ts            edit_file (exact-substring replace, unique-match check)
     write.ts           write_file (read-before-overwrite, path safety)
     checks.ts          run_checks (staged pipeline, stop-at-failure, tier-capped)
-    syntax.ts          language-specific parse/format (ts/tsx/js/jsx detect)
+    syntax.ts          language-specific parse check (ts/tsx/js/jsx detect)
     paths.ts           path resolution, confinement, realpath
-    types.ts           shared types (tool schemas, Results, Config)
+    types.ts           shared tool types (ToolResult, ToolContext, Tool)
   bench/
-    fixture.ts         fixture loading and in-process execution
+    fixture.ts         fixture loading and validation
     score.ts           oracle-based scoring (recall, precision, citations, fabrication)
-    run.ts             benchmark orchestration, baseline comparison
+    run.ts             fixture execution and scoring driver
     import-exercism.ts Exercism track fixture importer with exemplar validation
 ```
 
@@ -278,7 +279,7 @@ A first-class feature, not an afterthought: score any model on *agentic loop*
 tasks against deterministic ground truth. Published benchmarks measure one-shot
 extraction; nothing measures whether a model can hold a 12-turn tool loop, which
 is the only thing that matters here. **This suite measures the harness, not the
-models** (see [bench/README.md](bench/README.md) for the one rule): relative
+models** (see [bench/README.md](../bench/README.md) for the one rule): relative
 deltas across harness variants stay valid; absolute scores are contaminated
 because public exercises live in every model's training data.
 

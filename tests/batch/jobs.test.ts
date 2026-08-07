@@ -14,6 +14,7 @@ tiers:
 profiles:
   digest: { tools: [read_file, grep], tier: cheap }
   fix: { tools: [read_file, edit_file], tier: cheap, test_cmd: "bun test" }
+  gated: { tools: [read_file, edit_file, run_checks], tier: cheap, test_cmd: "bun test" }
 `);
 
 const JOBS_OK = `
@@ -112,5 +113,20 @@ describe("per-job check overrides", () => {
     const specs = parseJobs("jobs:\n  - { id: a, profile: fix, task: t }\n");
     const jobs = resolveJobs(CFG, specs, process.cwd());
     expect(jobs[0]!.run.checks).toEqual([{ name: "tests", cmd: "bun test" }]);
+  });
+
+  // A per-job checks:[] override replaces what resolveProfile validated —
+  // without re-checking the same run_checks invariants, this is a way to
+  // hand run_checks zero stages: the tool would answer "All checks pass."
+  // and run.ts would skip the post-loop gate (no test field at all).
+  it("rejects a checks:[] override on a run_checks profile, naming the job", () => {
+    const specs = parseJobs("jobs:\n  - { id: bad, profile: gated, task: t, checks: [] }\n");
+    expect(() => resolveJobs(CFG, specs, process.cwd())).toThrow(/job 'bad'.*run_checks/s);
+  });
+
+  it("allows a checks:[] override on a non-run_checks write profile — an explicit gate opt-out", () => {
+    const specs = parseJobs("jobs:\n  - { id: a, profile: fix, task: t, checks: [] }\n");
+    const jobs = resolveJobs(CFG, specs, process.cwd());
+    expect(jobs[0]!.run.checks).toEqual([]);
   });
 });

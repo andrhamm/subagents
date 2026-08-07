@@ -101,6 +101,12 @@ export async function importTrack(
         `oracle:`,
         `  status: ok`,
         `  checks_pass: true`,
+        // The importer knows the solution paths; without this a delegate
+        // that edits the test file instead of the solution scores clean —
+        // checks_pass alone doesn't say WHICH file changed. Exercise-relative
+        // paths land root-relative after the files/ copy, matching what
+        // collectChanges reports.
+        `  files_changed: [${solutions.map((f) => JSON.stringify(f)).join(", ")}]`,
         ``,
       ].join("\n"));
       imported.push(slug);

@@ -222,6 +222,10 @@ async function runMain(argv: string[]): Promise<number> {
   const transcriptPath = values.transcript
     ?? join(process.env["TMPDIR"] ?? "/tmp", `subagents-${Date.now()}.json`);
   mkdirSync(resolve(transcriptPath, ".."), { recursive: true });
+  // Without this, a typo'd --log directory yields silent zero output: the
+  // per-turn writer in executeRun swallows its own mkdir-less ENOENT (it's
+  // advisory, like every observer), so nothing ever says the log never landed.
+  if (values.log) mkdirSync(resolve(values.log, ".."), { recursive: true });
 
   const started = Date.now();
   const { envelope, clean } = await executeRun({
@@ -420,6 +424,15 @@ async function benchMain(argv: string[]): Promise<number> {
     process.stderr.write(`missing required --tiers\n\n${USAGE}`);
     return 1;
   }
+  // A value like "," or ",," survives parseArgs (it's a non-empty string)
+  // but splits into zero usable tiers — without this check the loop below
+  // simply never iterates: exit 0, an empty --out, no hint why.
+  const tiers = values.tiers.split(",").map((t) => t.trim()).filter(Boolean);
+  if (tiers.length === 0) {
+    process.stderr.write(
+      `--tiers resolved to no tiers (got ${JSON.stringify(values.tiers)})\n`);
+    return 1;
+  }
   let deadlineSecs: number | undefined;
   if (values["deadline-secs"] !== undefined) {
     deadlineSecs = Number(values["deadline-secs"]);
@@ -445,7 +458,6 @@ async function benchMain(argv: string[]): Promise<number> {
   }
   const fixtures = [];
   for (const d of dirs) fixtures.push(await loadFixture(d));
-  const tiers = values.tiers.split(",").map((t) => t.trim()).filter(Boolean);
   for (const fx of fixtures) {
     for (const tier of tiers) {
       resolveProfile(

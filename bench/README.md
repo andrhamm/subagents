@@ -41,4 +41,6 @@ to a throwaway git repo per run. Oracles: expected `status`, gate verdict
 `--log-dir` writes per-turn JSONL (`{ts, turn, latencyMs, backendMs,
 toolCalls, promptTokens, completionTokens, finishReason}`) — the same
 format `subagents run --log` and every batch job emit, so one analysis
-script serves bench runs and real workloads.
+script serves bench runs and real workloads. On an error run, a turn that
+fails before completing (a malformed response, an empty `choices`) emits
+no event at all, so the event count can be lower than the envelope's `turns`.

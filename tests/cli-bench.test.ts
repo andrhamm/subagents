@@ -114,4 +114,27 @@ describe("subagents bench", () => {
       srv.stop();
     }
   });
+
+  // "," survives parseArgs (it's a non-empty string) but splits into zero
+  // usable tiers. Without the guard, benchMain's loop just never iterates:
+  // exit 0, and the pre-existing --out file gets overwritten with "".
+  it("rejects --tiers that resolves to no tiers, without touching --out", async () => {
+    const srv = serveAnswer("x");
+    const outDir = mkdtempSync(join(tmpdir(), "subagents-benchout-"));
+    cleanups.push(outDir);
+    try {
+      const cfg = benchConfig(srv.url);
+      cleanups.push(join(cfg, ".."));
+      const out = join(outDir, "results.jsonl");
+      writeFileSync(out, "sentinel\n");
+      const r = await runBench([
+        "--fixtures", "bench/fixtures/routes-recall", "--tiers", ",",
+        "--config", cfg, "--out", out]);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain("tiers");
+      expect(await Bun.file(out).text()).toBe("sentinel\n");
+    } finally {
+      srv.stop();
+    }
+  });
 });

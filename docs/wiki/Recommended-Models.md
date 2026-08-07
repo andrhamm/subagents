@@ -262,4 +262,4 @@ time, and how the model terminated. Fabrication rate and termination style matte
 much as recall. For comparable rows, use the repo's benchmark suite (`subagents bench`):
 rows measure harness variants, not model capability — public exercises contaminate
 absolute scores, so treat them as inflated and read only the deltas (see
-[bench/README.md](../../../bench/README.md)).
+[bench/README.md](../../bench/README.md)).

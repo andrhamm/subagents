@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import type { CheckConfig, Config, ResolvedRun } from "../config";
-import { desugarChecks, resolveProfile, validateChecks } from "../config";
+import { assertRunChecksUsable, desugarChecks, resolveProfile, validateChecks } from "../config";
 
 export interface JobSpec {
   id: string;
@@ -80,12 +80,16 @@ export function resolveJobs(cfg: Config, specs: JobSpec[], defaultRoot: string):
       throw new Error(`job '${spec.id}': ${e instanceof Error ? e.message : String(e)}`);
     }
     if (spec.test_cmd !== undefined || spec.checks !== undefined) {
-      let checks: CheckConfig[];
-      try {
-        checks = desugarChecks(spec.test_cmd, spec.checks, "job");
-      } catch (e) {
-        throw new Error(`job '${spec.id}': ${e instanceof Error ? e.message : String(e)}`);
-      }
+      // `where` already carries the job's identity, so desugarChecks's own
+      // message needs no outer wrap — wrapping it a second time doubled
+      // "job" in the error text ("job 'x': job: ...").
+      const where = `job '${spec.id}'`;
+      const checks = desugarChecks(spec.test_cmd, spec.checks, where);
+      // A job's checks:[] override replaces what resolveProfile validated —
+      // it must clear the same run_checks bar the profile did, or an
+      // override becomes a way to hand run_checks zero stages and let the
+      // post-loop gate go missing entirely.
+      assertRunChecksUsable(run.tools, checks, run.worktree, where);
       run = { ...run, checks };
     }
     const root = resolve(spec.root ?? defaultRoot);

@@ -100,6 +100,10 @@ describe("importTrack", () => {
     expect(fx.tools).toContain("run_checks");
     expect(fx.checks).toEqual([{ name: "tests", cmd: "bun test" }]);
     expect(fx.oracle.checks_pass).toBe(true);
+    // The importer knows the solution paths — without stamping them into
+    // the oracle, a delegate that edits the test file instead of the
+    // solution scores clean (checks_pass alone doesn't say which file moved).
+    expect(fx.oracle.files_changed).toEqual(["two-fer.ts"]);
     // The fixture ships the STUB, not the exemplar — the task is unsolved.
     const stub = await Bun.file(join(dest, "two-fer", "files", "two-fer.ts")).text();
     expect(stub).toContain("implement");

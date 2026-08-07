@@ -54,9 +54,41 @@ export function desugarChecks(
   if (testCmd !== undefined && checks !== undefined) {
     throw new Error(`${where}: give test_cmd or checks, not both`);
   }
+  // `sh -c ""` exits 0 — an empty (or whitespace-only) test_cmd would run
+  // nothing and still report the gate green. Pre-branch, a falsy testCmd
+  // meant no gate at all; this spelling must fail loudly instead of
+  // silently reintroducing that hole through the back door.
+  if (testCmd !== undefined && testCmd.trim() === "") {
+    throw new Error(`${where}: test_cmd must not be empty`);
+  }
   if (checks !== undefined) return validateChecks(checks, where);
   if (testCmd !== undefined) return [{ name: "tests", cmd: testCmd }];
   return [];
+}
+
+/**
+ * run_checks in the tool list implies two invariants no matter where the
+ * checks list came from — profile config or a per-job override: at least
+ * one stage to run, and a worktree for it to run in. Shared so a job's
+ * checks:[] override is held to the same bar resolveProfile already
+ * enforced; a checks:[] override on a profile WITHOUT run_checks stays
+ * legal (that's an explicit gate opt-out, not a hole).
+ */
+export function assertRunChecksUsable(
+  tools: string[], checks: CheckConfig[], worktree: boolean, where: string,
+): void {
+  if (tools.includes("run_checks") && checks.length === 0) {
+    throw new Error(
+      `${where} lists run_checks but has no checks to run — ` +
+        "add test_cmd or a checks list",
+    );
+  }
+  if (tools.includes("run_checks") && !worktree) {
+    throw new Error(
+      `${where} lists run_checks but runs without a worktree — ` +
+        "checks execute where the delegate works; add a write tool or 'worktree: true'",
+    );
+  }
 }
 
 export interface ProfileConfig {
@@ -187,18 +219,7 @@ export function resolveProfile(
 
   const resolvedChecks = desugarChecks(
     profile.test_cmd, profile.checks, `profile '${profileName}'`);
-  if (profile.tools.includes("run_checks") && resolvedChecks.length === 0) {
-    throw new Error(
-      `profile '${profileName}' lists run_checks but has no checks to run — ` +
-        "add test_cmd or a checks list",
-    );
-  }
-  if (profile.tools.includes("run_checks") && !worktree) {
-    throw new Error(
-      `profile '${profileName}' lists run_checks but runs without a worktree — ` +
-        "checks execute where the delegate works; add a write tool or 'worktree: true'",
-    );
-  }
+  assertRunChecksUsable(profile.tools, resolvedChecks, worktree, `profile '${profileName}'`);
 
   return {
     baseUrl: provider.base_url.replace(/\/+$/, ""),
