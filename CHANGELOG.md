@@ -1,0 +1,16 @@
+# Changelog
+
+## [0.2.0](https://github.com/andrhamm/subagents/compare/subagents-v0.1.0...subagents-v0.2.0) (2026-08-07)
+
+
+### Features
+
+* plugin marketplace config, manifest, and the usage skill ([ab1bb13](https://github.com/andrhamm/subagents/commit/ab1bb1366d3a3e222bee32b14681f16a670a3d58))
+* the subagents harness — read/write loops, batch, checks pipeline, bench suite ([#1](https://github.com/andrhamm/subagents/issues/1)) ([ceea7bf](https://github.com/andrhamm/subagents/commit/ceea7bfccb4e986bb6bf14f9bdac4b47e146c1bd))
+
+
+### Bug Fixes
+
+* a feature is a minor bump, even before 1.0 ([be0c544](https://github.com/andrhamm/subagents/commit/be0c5442d2d12156c072a9785500014cc98b02fb))
+* compare safePath result against the realpath'd root ([f773897](https://github.com/andrhamm/subagents/commit/f773897d31b4ffebd5603d7b9437ca11e7feecdb))
+* release-please stays pre-1.0 and can actually open its PR ([a1ec26e](https://github.com/andrhamm/subagents/commit/a1ec26e8e04cb89f9ff35debdabcd0eece6b276f))
