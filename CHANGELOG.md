@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/andrhamm/subagents/compare/subagents-v0.2.1...subagents-v0.2.2) (2026-08-07)
+
+
+### Bug Fixes
+
+* **loop:** stop blaming tool-use capability after real tool calls ([#4](https://github.com/andrhamm/subagents/issues/4)) ([2f5f782](https://github.com/andrhamm/subagents/commit/2f5f782bb33a40603cc8d6099e49118ab68cd50f))
+
 ## [0.2.1](https://github.com/andrhamm/subagents/compare/subagents-v0.2.0...subagents-v0.2.1) (2026-08-07)
 
 

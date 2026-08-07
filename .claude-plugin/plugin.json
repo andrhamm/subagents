@@ -1,6 +1,6 @@
 {
   "name": "subagents",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Delegate scoped code investigation and small worktree-confined edits to any OpenAI-compatible model, for a fixed small context cost",
   "author": {
     "name": "Andrew Hammond"
