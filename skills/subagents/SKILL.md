@@ -116,7 +116,7 @@ failed-but-close diff is still yours to salvage or discard.
 { "status": "ok", "summary": "...", "turns": 4, "wall_secs": 12.0,
   "files_changed": ["src/rate-limit.ts"], "diffstat": "1 file changed, 1 insertion(+), 1 deletion(-)", "test": {"ran": true, "passed": true, "cmd": "bun test"},
   "checks": [{"name": "tests", "passed": true, "timedOut": false}], "worktree": "/tmp/subagents-wt-…",
-  "context": {"peak_prompt_tokens": 21628, "limit": null, "pressure": null},
+  "context": {"peak_prompt_tokens": 21628, "limit": 131072, "pressure": 0.17},
   "truncations": 0, "local_tokens": 21628, "transcript": "..." }
 ```
 
@@ -137,9 +137,14 @@ exist yet (the MCP client hasn't landed). Check these before trusting
 - **`status: "error"`** — read `detail`. One real cause: the model returned no
   tool calls and no content on some turn — a capability problem (the model
   can't call tools, or chose not to), not a task failure.
-- **`context.limit` / `context.pressure`** — currently always `null`. The
-  context-limit probe (an LM Studio adapter) hasn't landed, so pressure can't
-  be computed yet. A `null` here means "unknown," not "no pressure."
+- **`context.limit` / `context.pressure`** — populated for `kind: lmstudio`
+  providers, probed from the server after the run; `null` on other provider
+  kinds or when the probe fails. `null` means "unknown," not "no pressure."
+  Pressure near 1.0 means the task nearly filled the model's context window —
+  narrow the task or use a larger-context tier. A run that *exceeded* the
+  window reports `status: "error"` with a summary saying the task outgrew the
+  model's context window (with token counts) — escalate to a larger-context
+  tier rather than retrying as-is.
 - **`status: "deadline"` / `"max_turns"` / `"budget"`** — a partial result, not
   a failure. `summary` falls back to `detail` when the run stopped before
   producing prose (e.g. mid-tool-call), so it's never blank on a real stop.

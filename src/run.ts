@@ -8,6 +8,7 @@ import { DEFAULT_SYSTEM_PROMPT, WRITE_SYSTEM_PROMPT_SUFFIX, runLoop } from "./lo
 import { buildEnvelope, type Envelope, type WriteOutcome } from "./envelope";
 import { writeTranscript } from "./transcript";
 import { assertGitRepo, collectChanges, createWorktree, removeWorktree } from "./worktree";
+import { fetchContextLimit, parseContextExceeded } from "./backends/lmstudio";
 import { runChecks } from "./testgate";
 import { makeRunChecks, RUN_CHECKS_NAME } from "./tools/checks";
 
@@ -126,6 +127,33 @@ export async function executeRun(req: RunRequest): Promise<RunOutcome> {
     }
   }
 
+  // Post-loop on purpose: the run itself just (JIT-)loaded the model, so
+  // /api/v0 can report loaded_context_length — the config actually serving —
+  // where a pre-loop query of an unloaded model would only see the ceiling.
+  // Deadline-clamped because this runs inside the wrap-up reserve: a hung
+  // management endpoint must degrade the field, never cost the envelope.
+  let contextLimit: number | null = null;
+  if (run.kind === "lmstudio") {
+    const budgetMs = req.deadlineAt === undefined ? Infinity : req.deadlineAt - Date.now();
+    if (budgetMs > 2000) {
+      contextLimit = await fetchContextLimit(run.baseUrl, run.model, {
+        timeoutMs: Math.min(5000, budgetMs - 1500),
+      });
+    }
+  }
+
+  const exceeded = result.status === "error" ? parseContextExceeded(result.detail) : null;
+  if (exceeded) {
+    // The server itself named the limit it enforced — better than nothing
+    // when the management API had no answer (wrong id, endpoint gone).
+    contextLimit ??= exceeded.limit;
+    // The raw HTTP 400 stays in detail; only the headline is rewritten.
+    result.summary = exceeded.needed !== null
+      ? `task outgrew the model's context window (${exceeded.needed} tokens needed, ` +
+        `${exceeded.limit} available) — retry on a larger-context tier`
+      : "task outgrew the model's context window — retry on a larger-context tier";
+  }
+
   let transcriptField = req.transcriptPath;
   try {
     await writeTranscript(req.transcriptPath, {
@@ -144,7 +172,7 @@ export async function executeRun(req: RunRequest): Promise<RunOutcome> {
   const envelope = buildEnvelope(result, {
     wallSecs: (Date.now() - started) / 1000,
     transcript: transcriptField,
-    contextLimit: null,
+    contextLimit,
     ...(writeOutcome ? { writes: writeOutcome } : {}),
   });
 

@@ -87,6 +87,179 @@ afterEach(() => {
   for (const dir of cleanups.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
+/**
+ * Chat script plus LM Studio's /api/v0 management endpoint on one port —
+ * executeRun consults the latter for kind: lmstudio runs. `v0` null means
+ * the endpoint answers the live unknown-id shape (HTTP 400).
+ */
+function serveWithV0(
+  script: Array<object | { httpStatus: number; body: string }>,
+  v0: object | null,
+): { url: string; v0Hits: () => number; stop(): void } {
+  let i = 0;
+  let hits = 0;
+  const server = Bun.serve({
+    port: 0,
+    fetch: async (req) => {
+      const path = new URL(req.url).pathname;
+      if (path.startsWith("/api/v0/models/")) {
+        hits++;
+        return v0 === null
+          ? Response.json({ error: "Model with identifier 'fake-model' not found" }, { status: 400 })
+          : Response.json(v0);
+      }
+      await req.text();
+      const next = script[Math.min(i, script.length - 1)]!;
+      i++;
+      if ("httpStatus" in next) {
+        return new Response(next.body as string, {
+          status: next.httpStatus as number,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return Response.json(next);
+    },
+  });
+  return {
+    url: `http://127.0.0.1:${server.port}/v1`,
+    v0Hits: () => hits,
+    stop: () => server.stop(true),
+  };
+}
+
+function readRun(baseUrl: string, kind: "openai" | "lmstudio"): ResolvedRun {
+  return {
+    baseUrl,
+    kind,
+    model: "fake-model",
+    sampling: {},
+    tools: ["read_file"],
+    maxTurns: 20,
+    maxTokens: 8000,
+    timeoutMs: 300_000,
+    worktree: false,
+    checks: [],
+    testTimeoutMs: 120_000,
+    provider: "test",
+    maxInFlight: 2,
+  };
+}
+
+// Verbatim /v1/chat/completions HTTP 400 body captured live 2026-08-07 —
+// the escaped engine error nested inside the outer "error" string.
+const LIVE_EXCEEDED_BODY =
+  '{"error":"Engine protocol predict request returned 400: {\\"error\\":{\\"code\\":400,\\"message\\":\\"request (270010 tokens) exceeds the available context size (262144 tokens), try increasing it\\",\\"type\\":\\"exceed_context_size_error\\",\\"n_prompt_tokens\\":270010,\\"n_ctx\\":262144}}"}';
+
+function tmpTranscript(): string {
+  const dir = mkdtempSync(join(tmpdir(), "subagents-run-tp-"));
+  cleanups.push(dir);
+  return join(dir, "t.json");
+}
+
+describe("executeRun — context limit from LM Studio's management API", () => {
+  it("populates context.limit and pressure for a kind: lmstudio run", async () => {
+    const srv = serveWithV0(
+      [{
+        choices: [{ message: { role: "assistant", content: "done" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 9000, completion_tokens: 10 },
+      }],
+      { id: "fake-model", state: "loaded", max_context_length: 262144, loaded_context_length: 32768 },
+    );
+    try {
+      const { envelope } = await executeRun({
+        run: readRun(srv.url, "lmstudio"), task: "t", root: process.cwd(),
+        transcriptPath: tmpTranscript(),
+      });
+      expect(envelope.context.limit).toBe(32768);
+      expect(envelope.context.pressure).toBe(0.27);
+      expect(srv.v0Hits()).toBe(1);
+    } finally {
+      srv.stop();
+    }
+  });
+
+  it("does not consult /api/v0 for a kind: openai run — limit stays null", async () => {
+    const srv = serveWithV0(
+      [{
+        choices: [{ message: { role: "assistant", content: "done" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 100, completion_tokens: 10 },
+      }],
+      { id: "fake-model", state: "loaded", loaded_context_length: 32768 },
+    );
+    try {
+      const { envelope } = await executeRun({
+        run: readRun(srv.url, "openai"), task: "t", root: process.cwd(),
+        transcriptPath: tmpTranscript(),
+      });
+      expect(envelope.context.limit).toBeNull();
+      expect(envelope.context.pressure).toBeNull();
+      expect(srv.v0Hits()).toBe(0);
+    } finally {
+      srv.stop();
+    }
+  });
+
+  it("names the outgrown context window in the summary on the live exceeded-400, not a generic HTTP 400", async () => {
+    const srv = serveWithV0(
+      [{ httpStatus: 400, body: LIVE_EXCEEDED_BODY }],
+      { id: "fake-model", state: "loaded", max_context_length: 262144, loaded_context_length: 262144 },
+    );
+    try {
+      const { envelope, clean } = await executeRun({
+        run: readRun(srv.url, "lmstudio"), task: "t", root: process.cwd(),
+        transcriptPath: tmpTranscript(),
+      });
+      expect(clean).toBe(false);
+      expect(envelope.status).toBe("error");
+      expect(envelope.summary).toMatch(/outgrew the model's context window/);
+      expect(envelope.summary).toContain("270010");
+      expect(envelope.summary).toContain("262144");
+      expect(envelope.summary).toMatch(/larger-context tier/);
+      // The raw error stays available — the summary rewrite must not hide it.
+      expect(envelope.detail).toContain("HTTP 400");
+      expect(envelope.context.limit).toBe(262144);
+    } finally {
+      srv.stop();
+    }
+  });
+
+  it("backfills context.limit from the error's own count when /api/v0 has no answer", async () => {
+    const srv = serveWithV0([{ httpStatus: 400, body: LIVE_EXCEEDED_BODY }], null);
+    try {
+      const { envelope } = await executeRun({
+        run: readRun(srv.url, "lmstudio"), task: "t", root: process.cwd(),
+        transcriptPath: tmpTranscript(),
+      });
+      expect(envelope.status).toBe("error");
+      expect(envelope.context.limit).toBe(262144);
+    } finally {
+      srv.stop();
+    }
+  });
+
+  it("skips the /api/v0 lookup when the deadline is already spent — the envelope must not wait on it", async () => {
+    const srv = serveWithV0(
+      [{
+        choices: [{ message: { role: "assistant", content: "done" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 100, completion_tokens: 10 },
+      }],
+      { id: "fake-model", state: "loaded", loaded_context_length: 32768 },
+    );
+    try {
+      const { envelope } = await executeRun({
+        run: readRun(srv.url, "lmstudio"), task: "t", root: process.cwd(),
+        transcriptPath: tmpTranscript(),
+        deadlineAt: Date.now() - 1000,
+      });
+      expect(envelope.status).toBe("deadline");
+      expect(envelope.context.limit).toBeNull();
+      expect(srv.v0Hits()).toBe(0);
+    } finally {
+      srv.stop();
+    }
+  });
+});
+
 describe("executeRun — test gate bounded by the caller's deadline", () => {
   it("clamps a 120s test_timeout_ms to what's left of a near-exhausted deadline", async () => {
     const repo = await initRepo();

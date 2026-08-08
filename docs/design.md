@@ -109,8 +109,9 @@ src/
 ```
 
 Planned but not built: `bash` tool (command exec with timeout + allow/deny),
-MCP client (Streamable-HTTP to external tool servers), LM Studio adapter
-(capability probe, `context.limit`/`context.pressure`).
+MCP client (Streamable-HTTP to external tool servers), the LM Studio tool-use
+capability probe (the adapter's context-limit probe —
+`context.limit`/`context.pressure` — landed in `src/backends/lmstudio.ts`).
 
 Runtime is Bun (TypeScript, no build step, `bun build --compile` for a
 single-file binary).
@@ -215,9 +216,12 @@ configured stage (`name`, `passed`, `timedOut`); `test` stays the overall
 pass/fail regardless of stage count. `status` is one of `ok`, `max_turns`,
 `budget`, `deadline`, `error` — not `stopped`. `tools_omitted` still doesn't
 exist because the MCP client doesn't. And `context.limit`/`context.pressure`
-are `null` in every run today — nothing populates a context limit until the LM
-Studio adapter lands, so don't read a `0.66` like the example above as
-achievable yet.
+are populated for `kind: lmstudio` providers — after the loop,
+`src/backends/lmstudio.ts` asks `/api/v0/models/{id}` for the loaded model's
+context length (preferring `loaded_context_length`, the serving config, over
+`max_context_length`), memoized per (provider, model) so a batch group costs
+one GET. They stay `null` — unknown, not "no pressure" — for `kind: openai`
+providers or when the probe fails.
 
 `truncations` and `context.pressure` exist because of failure #2 above: the
 orchestrator must be able to see that the delegate was working blind, without
