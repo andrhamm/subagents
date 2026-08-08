@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/andrhamm/subagents/compare/subagents-v0.3.0...subagents-v0.4.0) (2026-08-08)
+
+
+### Features
+
+* **lmstudio:** report context limit in envelope ([c0f2530](https://github.com/andrhamm/subagents/commit/c0f253044775bce18032eed912a290b8c11c5a9b))
+
 ## [0.3.0](https://github.com/andrhamm/subagents/compare/subagents-v0.2.2...subagents-v0.3.0) (2026-08-07)
 
 
